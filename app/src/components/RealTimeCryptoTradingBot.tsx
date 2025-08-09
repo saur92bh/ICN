@@ -94,6 +94,10 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const [riskLevel, setRiskLevel] = useState<'low' | 'medium' | 'high'>('medium');
   const [apiConfig, setApiConfig] = useState<ApiConfig>({ exchange: 'binance', apiKey: '', apiSecret: '', passphrase: '' });
   const [realTrading, setRealTrading] = useState(false);
+  const [futuresEnabled, setFuturesEnabled] = useState(false);
+  const [investPerTradeUSD, setInvestPerTradeUSD] = useState(10);
+  const [targetProfitUSD, setTargetProfitUSD] = useState(20);
+  const [leverage, setLeverage] = useState(10);
 
   const [liveData, setLiveData] = useState<LiveData>({
     BTCUSDT: { symbol: 'BTCUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
@@ -275,15 +279,22 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     const confMultiplier = confidence === 'high' ? 1.5 : confidence === 'medium' ? 1.0 : 0.6;
     const riskMultiplier = riskLevel === 'low' ? 1.3 : riskLevel === 'high' ? 0.7 : 1.0;
     const adjustedRisk = riskAmount * confMultiplier * riskMultiplier;
-    const size = adjustedRisk / currentPrice;
+    // Position sizing
+    const simSize = adjustedRisk / currentPrice;
+    const size = futuresEnabled ? (investPerTradeUSD * leverage) / currentPrice : simSize;
     const entryPrice = side === 'long' ? currentData.ask : currentData.bid;
     const atr = priceHistoryRef.current[settings.selectedPair].slice(-10).reduce((sum, price, i, arr) => i === 0 ? sum : sum + Math.abs(price - arr[i-1]), 0) / 9;
     const dynamicSL = Math.max(settings.stopLoss / 100, (atr / currentPrice) * 2);
     const dynamicTP = Math.max(settings.profitTarget / 100, (atr / currentPrice) * 3);
     const newPosition: Position = { id: Date.now() + Math.random(), side, size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss: side === 'long' ? entryPrice * (1 - dynamicSL) : entryPrice * (1 + dynamicSL), takeProfit: side === 'long' ? entryPrice * (1 + dynamicTP) : entryPrice * (1 - dynamicTP), reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date() } as Position;
 
-    // Optional: place real order
-    if (realTrading) {
+    if (realTrading && futuresEnabled) {
+      try {
+        const resp = await fetch('/api/futures/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: settings.selectedPair, side, investUSD: investPerTradeUSD, leverage, price: entryPrice }) });
+        const j = await resp.json();
+        if (!resp.ok || !j.ok) { console.warn('Futures order failed', j); }
+      } catch (err) { console.warn('Futures order error', err); }
+    } else if (realTrading) {
       try {
         const resp = await fetch('/api/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: settings.selectedPair, side, quantity: size }) });
         const j = await resp.json();
@@ -454,6 +465,32 @@ const RealTimeCryptoTradingBot: React.FC = () => {
           <div className="bg-gray-800 p-6 rounded-xl">
             <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Settings className="w-5 h-5 text-gray-400" />Live Trading Settings</h2>
             <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">Enable Futures (USD-M)</span>
+                <label className="inline-flex items-center cursor-pointer">
+                  <input type="checkbox" className="sr-only peer" checked={futuresEnabled} onChange={() => setFuturesEnabled(v => !v)} />
+                  <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:w-5 after:h-5 after:bg-white after:rounded-full after:transition-all peer-checked:bg-green-600"></div>
+                </label>
+              </div>
+              {futuresEnabled && (
+                <div className="grid grid-cols-1 gap-3 bg-gray-900 p-3 rounded border border-gray-700">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Invest per trade ($)</label>
+                    <input type="number" min={5} max={100000} value={investPerTradeUSD} onChange={e => setInvestPerTradeUSD(parseFloat(e.target.value || '0'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Target profit ($)</label>
+                    <input type="number" min={1} max={100000} value={targetProfitUSD} onChange={e => setTargetProfitUSD(parseFloat(e.target.value || '0'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Leverage</label>
+                    <input type="number" min={1} max={125} value={leverage} onChange={e => setLeverage(parseInt(e.target.value || '1'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    Est. size: {(investPerTradeUSD * leverage / Math.max(1, liveData[settings.selectedPair].price)).toFixed(6)} {settings.selectedPair.replace('USDT','')}
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="text-sm text-gray-400">Trading Pair</label>
                 <select value={settings.selectedPair} onChange={(e) => setSettings(prev => ({...prev, selectedPair: e.target.value as SymbolKey}))} className="w-full mt-1 bg-gray-700 text-white p-2 rounded">
