@@ -106,10 +106,18 @@ app.post('/api/futures/order', async (req, res) => {
     const market = client.market(normalized);
     const qtyRaw = (investUSD * leverage) / price;
     const amount = client.amountToPrecision(normalized, qtyRaw);
-    // Try to set leverage if supported
-    try { await (client as any).setLeverage(leverage, normalized); } catch {}
     const orderSide = side.toLowerCase() === 'long' || side.toLowerCase() === 'buy' ? 'buy' : 'sell';
-    const order = await client.createMarketOrder(normalized, orderSide as 'buy' | 'sell', parseFloat(amount));
+
+    // Exchange-specific params
+    const isBitget = currentKeys.exchange.toLowerCase() === 'bitget';
+    const holdSide = orderSide === 'buy' ? 'long' : 'short';
+    const setLevParams: any = isBitget ? { marginCoin: 'USDT', productType: 'USDT-FUTURES', holdSide } : {};
+    const orderParams: any = isBitget ? { marginCoin: 'USDT', productType: 'USDT-FUTURES' } : {};
+
+    // Try to set leverage if supported
+    try { await (client as any).setLeverage(leverage, normalized, setLevParams); } catch {}
+
+    const order = await client.createMarketOrder(normalized, orderSide as 'buy' | 'sell', parseFloat(amount), undefined, orderParams);
     return res.json({ ok: true, order, normalized });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: e.message });
