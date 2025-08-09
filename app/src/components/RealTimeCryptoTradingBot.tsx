@@ -96,8 +96,9 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const [realTrading, setRealTrading] = useState(false);
   const [futuresEnabled, setFuturesEnabled] = useState(false);
   const [investPerTradeUSD, setInvestPerTradeUSD] = useState(10);
-  const [targetProfitUSD, setTargetProfitUSD] = useState(20);
+  const [profitGoalUSD, setProfitGoalUSD] = useState(20);
   const [leverage, setLeverage] = useState(10);
+  const [autoStopOnGoal, setAutoStopOnGoal] = useState(true);
 
   const [liveData, setLiveData] = useState<LiveData>({
     BTCUSDT: { symbol: 'BTCUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
@@ -260,6 +261,8 @@ const RealTimeCryptoTradingBot: React.FC = () => {
 
   const executeTrade = async () => {
     if (!isActive || !isConnected || positions.length >= settings.maxPositions || balance < 10) return;
+    // Stop automatically if goal reached
+    if (futuresEnabled && autoStopOnGoal && totalProfit >= profitGoalUSD) { setIsActive(false); return; }
     const currentData = liveData[settings.selectedPair];
     const prices = priceHistoryRef.current[settings.selectedPair];
     if (!currentData?.price || prices.length < 30) return;
@@ -284,9 +287,24 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     const size = futuresEnabled ? (investPerTradeUSD * leverage) / currentPrice : simSize;
     const entryPrice = side === 'long' ? currentData.ask : currentData.bid;
     const atr = priceHistoryRef.current[settings.selectedPair].slice(-10).reduce((sum, price, i, arr) => i === 0 ? sum : sum + Math.abs(price - arr[i-1]), 0) / 9;
-    const dynamicSL = Math.max(settings.stopLoss / 100, (atr / currentPrice) * 2);
-    const dynamicTP = Math.max(settings.profitTarget / 100, (atr / currentPrice) * 3);
-    const newPosition: Position = { id: Date.now() + Math.random(), side, size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss: side === 'long' ? entryPrice * (1 - dynamicSL) : entryPrice * (1 + dynamicSL), takeProfit: side === 'long' ? entryPrice * (1 + dynamicTP) : entryPrice * (1 - dynamicTP), reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date() } as Position;
+    // Futures TP/SL derived from dollar targets if futures mode
+    const dynamicSL = futuresEnabled ? 0 : Math.max(settings.stopLoss / 100, (atr / currentPrice) * 2);
+    const dynamicTP = futuresEnabled ? 0 : Math.max(settings.profitTarget / 100, (atr / currentPrice) * 3);
+    // Compute TP/SL prices for futures using dollar targets
+    let takeProfit = 0; let stopLoss = 0;
+    if (futuresEnabled) {
+      const remainingGoal = Math.max(0, profitGoalUSD - totalProfit);
+      const perTradeTargetUSD = Math.max(1, Math.min(remainingGoal, profitGoalUSD));
+      const tpDiff = perTradeTargetUSD / size; // price delta to realize target USD
+      const riskUSD = investPerTradeUSD * 0.5; // 50% margin at risk by default
+      const slDiff = riskUSD / size;
+      takeProfit = side === 'long' ? entryPrice + tpDiff : entryPrice - tpDiff;
+      stopLoss = side === 'long' ? entryPrice - slDiff : entryPrice + slDiff;
+    } else {
+      takeProfit = side === 'long' ? entryPrice * (1 + dynamicTP) : entryPrice * (1 - dynamicTP);
+      stopLoss = side === 'long' ? entryPrice * (1 - dynamicSL) : entryPrice * (1 + dynamicSL);
+    }
+    const newPosition: Position = { id: Date.now() + Math.random(), side, size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss, takeProfit, reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date() } as Position;
 
     if (realTrading && futuresEnabled) {
       try {
@@ -479,16 +497,24 @@ const RealTimeCryptoTradingBot: React.FC = () => {
                     <input type="number" min={5} max={100000} value={investPerTradeUSD} onChange={e => setInvestPerTradeUSD(parseFloat(e.target.value || '0'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
                   </div>
                   <div className="flex items-center justify-between">
-                    <label className="text-sm text-gray-400">Target profit ($)</label>
-                    <input type="number" min={1} max={100000} value={targetProfitUSD} onChange={e => setTargetProfitUSD(parseFloat(e.target.value || '0'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
+                    <label className="text-sm text-gray-400">Profit goal ($)</label>
+                    <input type="number" min={1} max={100000} value={profitGoalUSD} onChange={e => setProfitGoalUSD(parseFloat(e.target.value || '0'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
                   </div>
                   <div className="flex items-center justify-between">
                     <label className="text-sm text-gray-400">Leverage</label>
                     <input type="number" min={1} max={125} value={leverage} onChange={e => setLeverage(parseInt(e.target.value || '1'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
                   </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Auto-stop on goal</label>
+                    <input type="checkbox" checked={autoStopOnGoal} onChange={() => setAutoStopOnGoal(v => !v)} />
+                  </div>
                   <div className="text-xs text-gray-400">
                     Est. size: {(investPerTradeUSD * leverage / Math.max(1, liveData[settings.selectedPair].price)).toFixed(6)} {settings.selectedPair.replace('USDT','')}
                   </div>
+                  <div className="w-full bg-gray-800 rounded h-2 overflow-hidden">
+                    <div className="bg-green-500 h-2" style={{ width: `${Math.min(100, (totalProfit / Math.max(1, profitGoalUSD)) * 100)}%` }} />
+                  </div>
+                  <div className="text-xs text-gray-400">Goal progress: ${totalProfit.toFixed(2)} / ${profitGoalUSD.toFixed(2)}</div>
                 </div>
               )}
               <div>
