@@ -7,7 +7,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In-memory storage for demo only (replace with secure vault in prod)
 let currentKeys: { exchange: string; apiKey: string; apiSecret: string; passphrase?: string } | null = null;
 
 function makeExchangeClient(keys: { exchange: string; apiKey: string; apiSecret: string; passphrase?: string }) {
@@ -47,8 +46,7 @@ function makeFuturesClient(keys: { exchange: string; apiKey: string; apiSecret: 
 }
 
 function toFuturesSymbol(sym: string, exchange: string) {
-  // Convert BTCUSDT -> BTC/USDT:USDT for usd-m perpetuals where required
-  const base = sym.replace('/','').replace(':','');
+  const base = sym.replace('/', '').replace(':', '');
   const m = base.match(/^([A-Z]+)USDT$/);
   if (!m) return sym;
   const b = m[1];
@@ -76,7 +74,6 @@ app.post('/api/ping', async (req, res) => {
   }
 });
 
-// Spot order kept for compatibility
 app.post('/api/order', async (req, res) => {
   try {
     if (!currentKeys) return res.status(400).json({ ok: false, error: 'Not connected' });
@@ -89,11 +86,17 @@ app.post('/api/order', async (req, res) => {
     const order = await client.createMarketOrder(normalized, orderSide as 'buy' | 'sell', quantity);
     return res.json({ ok: true, order });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e.message });
+    return res.status(500).json({ ok: false, error: e.message, details: (e as any)?.toString?.() });
   }
 });
 
-// Futures order with leverage and investUSD sizing
+async function prepareBitget(client: ccxt.Exchange, symbol: string, leverage: number, orderSide: 'buy' | 'sell') {
+  const holdSide = orderSide === 'buy' ? 'long' : 'short';
+  try { await (client as any).setPositionMode(false, symbol, { productType: 'USDT-FUTURES' }); } catch {}
+  try { await (client as any).setMarginMode('cross', symbol, { productType: 'USDT-FUTURES', marginCoin: 'USDT' }); } catch {}
+  try { await (client as any).setLeverage(leverage, symbol, { productType: 'USDT-FUTURES', marginCoin: 'USDT', holdSide }); } catch {}
+}
+
 app.post('/api/futures/order', async (req, res) => {
   try {
     if (!currentKeys) return res.status(400).json({ ok: false, error: 'Not connected' });
@@ -104,23 +107,32 @@ app.post('/api/futures/order', async (req, res) => {
     await client.loadMarkets();
     const normalized = toFuturesSymbol(symbol, currentKeys.exchange);
     const market = client.market(normalized);
-    const qtyRaw = (investUSD * leverage) / price;
-    const amount = client.amountToPrecision(normalized, qtyRaw);
-    const orderSide = side.toLowerCase() === 'long' || side.toLowerCase() === 'buy' ? 'buy' : 'sell';
+    const orderSide: 'buy' | 'sell' = side.toLowerCase() === 'long' || side.toLowerCase() === 'buy' ? 'buy' : 'sell';
 
-    // Exchange-specific params
+    // Bitget prep (position/margin/leverage)
+    if (currentKeys.exchange.toLowerCase() === 'bitget') {
+      await prepareBitget(client, normalized, leverage, orderSide);
+    }
+
+    // Amount with precision & min checks
+    const rawQty = (Number(investUSD) * Number(leverage)) / Number(price);
+    let amount = client.amountToPrecision(normalized, rawQty);
+    const min = market?.limits?.amount?.min ?? 0;
+    if (min && Number(amount) < min) {
+      const suggestedUSD = (min * Number(price)) / Number(leverage) * 1.05; // +5%
+      return res.status(400).json({ ok: false, error: 'amount_below_min', minAmount: min, suggestedInvestUSD: Math.ceil(suggestedUSD * 100) / 100 });
+    }
+
     const isBitget = currentKeys.exchange.toLowerCase() === 'bitget';
-    const holdSide = orderSide === 'buy' ? 'long' : 'short';
-    const setLevParams: any = isBitget ? { marginCoin: 'USDT', productType: 'USDT-FUTURES', holdSide } : {};
-    const orderParams: any = isBitget ? { marginCoin: 'USDT', productType: 'USDT-FUTURES' } : {};
+    const orderParams: any = isBitget ? { marginCoin: 'USDT', productType: 'USDT-FUTURES', reduceOnly: false, force: 'gtc' } : {};
 
-    // Try to set leverage if supported
-    try { await (client as any).setLeverage(leverage, normalized, setLevParams); } catch {}
-
-    const order = await client.createMarketOrder(normalized, orderSide as 'buy' | 'sell', parseFloat(amount), undefined, orderParams);
+    console.log('[ORDER]', currentKeys.exchange, normalized, orderSide, 'qty=', amount, 'lev=', leverage, orderParams);
+    const order = await client.createMarketOrder(normalized, orderSide, parseFloat(String(amount)), undefined, orderParams);
+    console.log('[ORDER-OK]', order?.id || 'no-id');
     return res.json({ ok: true, order, normalized });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e.message });
+    console.error('[ORDER-ERR]', e?.message || e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e), stack: e?.stack, raw: e });
   }
 });
 
