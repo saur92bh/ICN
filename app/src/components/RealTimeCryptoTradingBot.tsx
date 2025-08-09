@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Activity, Settings, Play, Pause, BarChart3, Wifi, WifiOff, Zap, Edit3 } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Activity, Settings, Play, Pause, BarChart3, Wifi, WifiOff, Zap, Edit3, RefreshCcw } from 'lucide-react';
 
 // Types
 type SymbolKey = 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT' | 'XRPUSDT';
@@ -532,6 +532,13 @@ const RealTimeCryptoTradingBot: React.FC = () => {
                 <div className="text-gray-400">{apiStatus}</div>
               </div>
             </div>
+            <button
+              onClick={() => setAutoRotateAssets(v => !v)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${autoRotateAssets ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-700 hover:bg-gray-600'} text-white`}
+              title="Auto-rotate strongest pair (BTC/ETH/SOL/XRP)"
+            >
+              <RefreshCcw className="w-4 h-4" /> {autoRotateAssets ? 'Auto-Rotate: ON' : 'Auto-Rotate: OFF'}
+            </button>
             <button onClick={toggleBot} disabled={!isConnected || liveData.BTCUSDT.price === 0} className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all ${(!isConnected || liveData.BTCUSDT.price === 0) ? 'bg-gray-600 cursor-not-allowed' : isActive ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}>
               {isActive ? (<><Pause className="w-5 h-5" />Stop</>) : (<><Play className="w-5 h-5" />Start</>)}
               {isActive && <Zap className="w-4 h-4 animate-pulse" />}
