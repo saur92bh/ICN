@@ -20,7 +20,8 @@ type LiveData = Record<SymbolKey, Ticker>;
 type Position = {
   id: number;
   side: 'long' | 'short';
-  size: number;
+  size: number; // current remaining size
+  originalSize: number;
   entryPrice: number;
   currentPrice: number;
   pnl: number;
@@ -33,11 +34,17 @@ type Position = {
   confidence: 'low' | 'medium' | 'high';
   rsi: string;
   entryTime: Date;
+  highestPrice?: number;
+  lowestPrice?: number;
+  partialTaken?: boolean;
+  perTradeTargetUSD?: number;
+  partialTargetPrice?: number;
+  trailDistance?: number; // price units
 };
 
 type Trade = {
   id: number;
-  type: 'OPEN' | 'CLOSE';
+  type: 'OPEN' | 'CLOSE' | 'PARTIAL';
   side: 'long' | 'short';
   size: number;
   price: number;
@@ -304,7 +311,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
       takeProfit = side === 'long' ? entryPrice * (1 + dynamicTP) : entryPrice * (1 - dynamicTP);
       stopLoss = side === 'long' ? entryPrice * (1 - dynamicSL) : entryPrice * (1 + dynamicSL);
     }
-    const newPosition: Position = { id: Date.now() + Math.random(), side, size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss, takeProfit, reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date() } as Position;
+    const newPosition: Position = { id: Date.now() + Math.random(), side, size, originalSize: size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss, takeProfit, reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date() } as Position;
 
     if (realTrading && futuresEnabled) {
       try {
