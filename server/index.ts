@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import ccxt from 'ccxt';
@@ -58,7 +58,7 @@ function toFuturesSymbol(sym: string, exchange: string) {
   return `${b}/USDT`;
 }
 
-app.post('/api/ping', async (req, res) => {
+app.post('/api/ping', async (req: Request, res: Response) => {
   const { exchange, apiKey, apiSecret, passphrase } = req.body || {};
   if (!exchange || !apiKey || !apiSecret) {
     return res.status(400).json({ ok: false, error: 'Missing credentials' });
@@ -89,7 +89,7 @@ app.post('/api/ping', async (req, res) => {
   }
 });
 
-app.post('/api/order', async (req, res) => {
+app.post('/api/order', async (req: Request, res: Response) => {
   try {
     if (!currentKeys) return res.status(400).json({ ok: false, error: 'Not connected' });
     const { symbol, side, quantity } = req.body || {};
@@ -105,14 +105,14 @@ app.post('/api/order', async (req, res) => {
   }
 });
 
-async function prepareBitget(client: ccxt.Exchange, symbol: string, leverage: number, orderSide: 'buy' | 'sell') {
+async function prepareBitget(client: any, symbol: string, leverage: number, orderSide: 'buy' | 'sell') {
   const holdSide = orderSide === 'buy' ? 'long' : 'short';
   try { await (client as any).setPositionMode(false, symbol, { productType: 'USDT-FUTURES' }); } catch {}
   try { await (client as any).setMarginMode('cross', symbol, { productType: 'USDT-FUTURES', marginCoin: 'USDT' }); } catch {}
   try { await (client as any).setLeverage(leverage, symbol, { productType: 'USDT-FUTURES', marginCoin: 'USDT', holdSide }); } catch {}
 }
 
-app.post('/api/futures/order', async (req, res) => {
+app.post('/api/futures/order', async (req: Request, res: Response) => {
   try {
     if (!currentKeys) return res.status(400).json({ ok: false, error: 'Not connected' });
     const { symbol, side, investUSD, leverage, price } = req.body || {};
@@ -220,7 +220,7 @@ async function fetchGdeltNews(minutes: number): Promise<NewsSignal> {
   }
 }
 
-app.get('/api/news-signal', async (req, res) => {
+app.get('/api/news-signal', async (req: Request, res: Response) => {
   try {
     const minutes = Number(req.query.minutes || 60) || 60;
     const now = Date.now();

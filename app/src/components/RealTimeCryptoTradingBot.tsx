@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { TrendingUp, TrendingDown, DollarSign, Activity, Settings, Play, Pause, BarChart3, Wifi, WifiOff, Zap, Edit3 } from 'lucide-react';
 
 // Types
-type SymbolKey = 'BTCUSDT' | 'ETHUSDT';
+type SymbolKey = 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT' | 'XRPUSDT';
+const PAIRS: SymbolKey[] = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'];
 
 type Ticker = {
   symbol: SymbolKey;
@@ -79,7 +80,7 @@ type SettingsState = {
 };
 
 type ApiConfig = {
-  exchange: 'binance' | 'bybit' | 'okx';
+  exchange: 'binance' | 'bybit' | 'bitget' | 'bingx';
   apiKey: string;
   apiSecret: string;
   passphrase?: string;
@@ -117,7 +118,9 @@ const RealTimeCryptoTradingBot: React.FC = () => {
 
   const [liveData, setLiveData] = useState<LiveData>({
     BTCUSDT: { symbol: 'BTCUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
-    ETHUSDT: { symbol: 'ETHUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null }
+    ETHUSDT: { symbol: 'ETHUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
+    SOLUSDT: { symbol: 'SOLUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
+    XRPUSDT: { symbol: 'XRPUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null }
   });
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -144,7 +147,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const intervalRef = useRef<number | null>(null);
   const analysisRef = useRef<number | null>(null);
-  const priceHistoryRef = useRef<Record<SymbolKey, number[]>>({ BTCUSDT: [], ETHUSDT: [] });
+  const priceHistoryRef = useRef<Record<SymbolKey, number[]>>({ BTCUSDT: [], ETHUSDT: [], SOLUSDT: [], XRPUSDT: [] });
   const apiIntervalRef = useRef<number | null>(null);
   const lastEntryRef = useRef<number>(0);
   const pnlHistoryRef = useRef<number[]>([]);
@@ -183,7 +186,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const fetchRealTimeData = async () => {
     try {
       setApiStatus(prev => prev.startsWith('✅') ? prev : 'Fetching live data...');
-      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_last_updated_at=true');
+      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_last_updated_at=true');
       if (!response.ok) throw new Error(`API Error: ${response.status}`);
       const data = await response.json();
       const now = new Date();
@@ -191,6 +194,8 @@ const RealTimeCryptoTradingBot: React.FC = () => {
       const newData: LiveData = {
         BTCUSDT: { symbol: 'BTCUSDT', price: data.bitcoin?.usd || 0, change24h: data.bitcoin?.usd_24h_change || 0, volume: data.bitcoin?.usd_24h_vol || 0, lastUpdate: now, istTime, bid: (data.bitcoin?.usd || 0) * 0.9995, ask: (data.bitcoin?.usd || 0) * 1.0005 },
         ETHUSDT: { symbol: 'ETHUSDT', price: data.ethereum?.usd || 0, change24h: data.ethereum?.usd_24h_change || 0, volume: data.ethereum?.usd_24h_vol || 0, lastUpdate: now, istTime, bid: (data.ethereum?.usd || 0) * 0.9995, ask: (data.ethereum?.usd || 0) * 1.0005 },
+        SOLUSDT: { symbol: 'SOLUSDT', price: data.solana?.usd || 0, change24h: data.solana?.usd_24h_change || 0, volume: data.solana?.usd_24h_vol || 0, lastUpdate: now, istTime, bid: (data.solana?.usd || 0) * 0.9995, ask: (data.solana?.usd || 0) * 1.0005 },
+        XRPUSDT: { symbol: 'XRPUSDT', price: data.ripple?.usd || 0, change24h: data.ripple?.usd_24h_change || 0, volume: data.ripple?.usd_24h_vol || 0, lastUpdate: now, istTime, bid: (data.ripple?.usd || 0) * 0.9995, ask: (data.ripple?.usd || 0) * 1.0005 },
       };
       setLiveData(newData);
       if (newData.BTCUSDT.price > 0) {
@@ -200,6 +205,14 @@ const RealTimeCryptoTradingBot: React.FC = () => {
       if (newData.ETHUSDT.price > 0) {
         priceHistoryRef.current.ETHUSDT.push(newData.ETHUSDT.price);
         if (priceHistoryRef.current.ETHUSDT.length > 200) priceHistoryRef.current.ETHUSDT = priceHistoryRef.current.ETHUSDT.slice(-200);
+      }
+      if (newData.SOLUSDT.price > 0) {
+        priceHistoryRef.current.SOLUSDT.push(newData.SOLUSDT.price);
+        if (priceHistoryRef.current.SOLUSDT.length > 200) priceHistoryRef.current.SOLUSDT = priceHistoryRef.current.SOLUSDT.slice(-200);
+      }
+      if (newData.XRPUSDT.price > 0) {
+        priceHistoryRef.current.XRPUSDT.push(newData.XRPUSDT.price);
+        if (priceHistoryRef.current.XRPUSDT.length > 200) priceHistoryRef.current.XRPUSDT = priceHistoryRef.current.XRPUSDT.slice(-200);
       }
       setLastDataUpdate(now); setIsConnected(true); setConnectionStatus(`LIVE - ${istTime}`);
     } catch (error: any) {
@@ -213,7 +226,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const connectWebSocket = () => {
     try {
       if (wsRef.current) wsRef.current.close();
-      const wsUrl = 'wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker';
+      const wsUrl = 'wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker/solusdt@ticker/xrpusdt@ticker';
       wsRef.current = new WebSocket(wsUrl);
       wsRef.current.onopen = () => { setConnectionStatus('LIVE WebSocket Connected'); };
       wsRef.current.onmessage = (event) => {
@@ -262,22 +275,35 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   };
 
   const analyzeMarket = () => {
-    const btcPrices = priceHistoryRef.current.BTCUSDT;
-    const ethPrices = priceHistoryRef.current.ETHUSDT;
-    if (btcPrices.length < 20) { setMarketAnalysis('Gathering live market data for analysis...'); return; }
-    const btcInd = calculateTechnicalIndicators(btcPrices);
-    const ethInd = calculateTechnicalIndicators(ethPrices);
-    const btcData = liveData.BTCUSDT; const ethData = liveData.ETHUSDT;
-    const btcVolatility = Math.abs(btcData.change24h);
-    const risk: 'low' | 'medium' | 'high' = btcVolatility > 8 ? 'high' : btcVolatility < 3 ? 'low' : 'medium';
+    // Require some history for each
+    const haveAny = PAIRS.some(p => priceHistoryRef.current[p].length >= 20);
+    if (!haveAny) { setMarketAnalysis('Gathering live market data for analysis...'); return; }
+
+    // Compute scores for all pairs
+    const scoreMap: Record<SymbolKey, number> = {
+      BTCUSDT: 0, ETHUSDT: 0, SOLUSDT: 0, XRPUSDT: 0
+    };
+    const indMap: Record<SymbolKey, ReturnType<typeof calculateTechnicalIndicators>> = {
+      BTCUSDT: calculateTechnicalIndicators(priceHistoryRef.current.BTCUSDT),
+      ETHUSDT: calculateTechnicalIndicators(priceHistoryRef.current.ETHUSDT),
+      SOLUSDT: calculateTechnicalIndicators(priceHistoryRef.current.SOLUSDT),
+      XRPUSDT: calculateTechnicalIndicators(priceHistoryRef.current.XRPUSDT),
+    };
+    for (const sym of PAIRS) {
+      const ind = indMap[sym];
+      const sigScore = ind.signal === 'strong_buy' ? 2 : ind.signal === 'buy' ? 1 : ind.signal === 'sell' ? -1 : ind.signal === 'strong_sell' ? -2 : 0;
+      const mom = (liveData[sym]?.change24h || 0) / 5;
+      scoreMap[sym] = sigScore + mom;
+    }
+
+    const best = PAIRS.reduce((a, b) => (scoreMap[b] > scoreMap[a] ? b : a), settings.selectedPair);
+    // Set risk level from selected pair's volatility
+    const selVol = Math.abs(liveData[settings.selectedPair]?.change24h || 0);
+    const risk: 'low' | 'medium' | 'high' = selVol > 8 ? 'high' : selVol < 3 ? 'low' : 'medium';
     setRiskLevel(risk);
 
-    // Auto-rotate asset to stronger momentum
-    if (autoRotateAssets) {
-      const btcScore = (btcInd.signal === 'strong_buy' ? 2 : btcInd.signal === 'buy' ? 1 : btcInd.signal === 'sell' ? -1 : btcInd.signal === 'strong_sell' ? -2 : 0) + (btcData.change24h / 5);
-      const ethScore = (ethInd.signal === 'strong_buy' ? 2 : ethInd.signal === 'buy' ? 1 : ethInd.signal === 'sell' ? -1 : ethInd.signal === 'strong_sell' ? -2 : 0) + (ethData.change24h / 5);
-      const prefer = btcScore >= ethScore ? 'BTCUSDT' : 'ETHUSDT';
-      if (prefer !== settings.selectedPair) setSettings(prev => ({ ...prev, selectedPair: prefer as SymbolKey }));
+    if (autoRotateAssets && best !== settings.selectedPair) {
+      setSettings(prev => ({ ...prev, selectedPair: best as SymbolKey }));
     }
 
     // Auto-scale leverage with volatility (lower leverage in high vol)
@@ -288,7 +314,19 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     }
 
     const currentTime = getCurrentIST();
-    const analysis = `LIVE MARKET ANALYSIS - ${currentTime}\n\nBTC/USDT: $${btcData.price.toLocaleString()} (${btcData.change24h >= 0 ? '+' : ''}${btcData.change24h.toFixed(2)}%)\nETH/USDT: $${ethData.price.toLocaleString()} (${ethData.change24h >= 0 ? '+' : ''}${ethData.change24h.toFixed(2)}%)\n\nBTC RSI: ${btcInd.rsi.toFixed(1)} | Signal: ${btcInd.signal.toUpperCase()}\nETH RSI: ${ethInd.rsi.toFixed(1)} | Signal: ${ethInd.signal.toUpperCase()}\nBTC SMA20: $${btcInd.sma20.toFixed(2)}\nRisk: ${risk.toUpperCase()}\n\nPair: ${settings.selectedPair} | Spread: $${(liveData[settings.selectedPair].ask - liveData[settings.selectedPair].bid).toFixed(2)} | Volume (24h): $${(btcData.volume / 1_000_000).toFixed(0)}M\n`;
+    const btc = liveData.BTCUSDT; const eth = liveData.ETHUSDT; const sol = liveData.SOLUSDT; const xrp = liveData.XRPUSDT;
+    const btcInd = indMap.BTCUSDT; const ethInd = indMap.ETHUSDT; const solInd = indMap.SOLUSDT; const xrpInd = indMap.XRPUSDT;
+    const analysis = `LIVE MARKET ANALYSIS - ${currentTime}\n\n` +
+      `BTC/USDT: $${btc.price.toLocaleString()} (${btc.change24h >= 0 ? '+' : ''}${btc.change24h.toFixed(2)}%)\n` +
+      `ETH/USDT: $${eth.price.toLocaleString()} (${eth.change24h >= 0 ? '+' : ''}${eth.change24h.toFixed(2)}%)\n` +
+      `SOL/USDT: $${sol.price.toLocaleString()} (${sol.change24h >= 0 ? '+' : ''}${sol.change24h.toFixed(2)}%)\n` +
+      `XRP/USDT: $${xrp.price.toLocaleString()} (${xrp.change24h >= 0 ? '+' : ''}${xrp.change24h.toFixed(2)}%)\n\n` +
+      `BTC RSI: ${btcInd.rsi.toFixed(1)} | Signal: ${btcInd.signal.toUpperCase()}\n` +
+      `ETH RSI: ${ethInd.rsi.toFixed(1)} | Signal: ${ethInd.signal.toUpperCase()}\n` +
+      `SOL RSI: ${solInd.rsi.toFixed(1)} | Signal: ${solInd.signal.toUpperCase()}\n` +
+      `XRP RSI: ${xrpInd.rsi.toFixed(1)} | Signal: ${xrpInd.signal.toUpperCase()}\n` +
+      `Risk: ${risk.toUpperCase()}\n\n` +
+      `Pair: ${settings.selectedPair} | Spread: $${(liveData[settings.selectedPair].ask - liveData[settings.selectedPair].bid).toFixed(2)}\n`;
     setMarketAnalysis(analysis);
   };
 
@@ -456,7 +494,8 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (isActive && isConnected && liveData.BTCUSDT.price > 0) {
+    const selectedPrice = liveData[settings.selectedPair]?.price || 0;
+    if (isActive && isConnected && selectedPrice > 0) {
       intervalRef.current = window.setInterval(executeTrade, settings.tradingInterval * 1000) as unknown as number;
       analysisRef.current = window.setInterval(analyzeMarket, 60000) as unknown as number;
       setTimeout(analyzeMarket, 2000);
@@ -465,7 +504,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
       if (analysisRef.current) clearInterval(analysisRef.current);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); if (analysisRef.current) clearInterval(analysisRef.current); };
-  }, [isActive, isConnected, liveData.BTCUSDT.price, settings.tradingInterval]);
+  }, [isActive, isConnected, settings.selectedPair, liveData, settings.tradingInterval]);
 
   const toggleBot = () => {
     if (!isActive && (!isConnected || liveData.BTCUSDT.price === 0)) { alert('Waiting for live market data connection.'); return; }
@@ -536,10 +575,12 @@ const RealTimeCryptoTradingBot: React.FC = () => {
         <div className="bg-gray-800 p-6 rounded-xl mb-6">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">Live Market Data - {getCurrentIST()}<span className="text-xs bg-red-600 px-2 py-1 rounded animate-pulse">REAL-TIME</span></h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {(['BTCUSDT','ETHUSDT'] as SymbolKey[]).map(sym => (
-              <div key={sym} className={`bg-gray-700 p-5 rounded-lg border-l-4 ${sym === 'BTCUSDT' ? 'border-orange-500' : 'border-blue-500'}`}>
+            {PAIRS.map(sym => (
+              <div key={sym} className={`bg-gray-700 p-5 rounded-lg border-l-4 ${sym === 'BTCUSDT' ? 'border-orange-500' : sym === 'ETHUSDT' ? 'border-blue-500' : sym === 'SOLUSDT' ? 'border-green-500' : 'border-cyan-500'}`}>
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className={`font-bold ${sym === 'BTCUSDT' ? 'text-orange-400' : 'text-blue-400'}`}>{sym === 'BTCUSDT' ? 'Bitcoin (BTC/USDT)' : 'Ethereum (ETH/USDT)'}</h3>
+                  <h3 className={`font-bold ${sym === 'BTCUSDT' ? 'text-orange-400' : sym === 'ETHUSDT' ? 'text-blue-400' : sym === 'SOLUSDT' ? 'text-green-400' : 'text-cyan-400'}`}>
+                    {sym === 'BTCUSDT' ? 'Bitcoin (BTC/USDT)' : sym === 'ETHUSDT' ? 'Ethereum (ETH/USDT)' : sym === 'SOLUSDT' ? 'Solana (SOL/USDT)' : 'XRP (XRP/USDT)'}
+                  </h3>
                   <div className="text-sm text-gray-400">{liveData[sym].lastUpdate && <div>Last: {liveData[sym].istTime}</div>}</div>
                 </div>
                 <p className="text-3xl font-bold">${liveData[sym].price.toLocaleString()}</p>
@@ -648,6 +689,8 @@ const RealTimeCryptoTradingBot: React.FC = () => {
                 <select value={settings.selectedPair} onChange={(e) => setSettings(prev => ({...prev, selectedPair: e.target.value as SymbolKey}))} className="w-full mt-1 bg-gray-700 text-white p-2 rounded">
                   <option value="BTCUSDT">BTC/USDT - ${liveData.BTCUSDT.price.toFixed(0)}</option>
                   <option value="ETHUSDT">ETH/USDT - ${liveData.ETHUSDT.price.toFixed(0)}</option>
+                  <option value="SOLUSDT">SOL/USDT - ${liveData.SOLUSDT.price.toFixed(0)}</option>
+                  <option value="XRPUSDT">XRP/USDT - ${liveData.XRPUSDT.price.toFixed(2)}</option>
                 </select>
               </div>
               <div>
