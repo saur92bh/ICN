@@ -93,6 +93,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const [marketAnalysis, setMarketAnalysis] = useState('');
   const [riskLevel, setRiskLevel] = useState<'low' | 'medium' | 'high'>('medium');
   const [apiConfig, setApiConfig] = useState<ApiConfig>({ exchange: 'binance', apiKey: '', apiSecret: '', passphrase: '' });
+  const [realTrading, setRealTrading] = useState(false);
 
   const [liveData, setLiveData] = useState<LiveData>({
     BTCUSDT: { symbol: 'BTCUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
@@ -253,7 +254,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     setMarketAnalysis(analysis);
   };
 
-  const executeTrade = () => {
+  const executeTrade = async () => {
     if (!isActive || !isConnected || positions.length >= settings.maxPositions || balance < 10) return;
     const currentData = liveData[settings.selectedPair];
     const prices = priceHistoryRef.current[settings.selectedPair];
@@ -280,6 +281,20 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     const dynamicSL = Math.max(settings.stopLoss / 100, (atr / currentPrice) * 2);
     const dynamicTP = Math.max(settings.profitTarget / 100, (atr / currentPrice) * 3);
     const newPosition: Position = { id: Date.now() + Math.random(), side, size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss: side === 'long' ? entryPrice * (1 - dynamicSL) : entryPrice * (1 + dynamicSL), takeProfit: side === 'long' ? entryPrice * (1 + dynamicTP) : entryPrice * (1 - dynamicTP), reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date() } as Position;
+
+    // Optional: place real order
+    if (realTrading) {
+      try {
+        const resp = await fetch('/api/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: settings.selectedPair, side, quantity: size }) });
+        const j = await resp.json();
+        if (!resp.ok || !j.ok) {
+          console.warn('Order failed', j);
+        }
+      } catch (err) {
+        console.warn('Order error', err);
+      }
+    }
+
     setPositions(prev => [...prev, newPosition]);
     const trade: Trade = { id: Date.now() + Math.random(), type: 'OPEN', side, size, price: entryPrice, timestamp: getCurrentIST(), symbol: settings.selectedPair, pnl: 0, reason, confidence, spread: spread.toFixed(2) };
     setTrades(prev => [trade, ...prev.slice(0, 99)]);
@@ -365,13 +380,14 @@ const RealTimeCryptoTradingBot: React.FC = () => {
         {/* API Connection Panel */}
         <div className="bg-gray-800 p-4 rounded-xl mb-6">
           <h2 className="text-lg font-semibold mb-3">Exchange Connection</h2>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
             <div className="md:col-span-1">
               <label className="text-xs text-gray-400">Exchange</label>
               <select value={apiConfig.exchange} onChange={e => setApiConfig(prev => ({ ...prev, exchange: e.target.value as ApiConfig['exchange'] }))} className="w-full mt-1 bg-gray-700 text-white p-2 rounded">
                 <option value="binance">Binance</option>
                 <option value="bybit">Bybit</option>
-                <option value="okx">OKX</option>
+                <option value="bitget">Bitget</option>
+                <option value="bingx">BingX</option>
               </select>
             </div>
             <div>
@@ -384,11 +400,12 @@ const RealTimeCryptoTradingBot: React.FC = () => {
             </div>
             <div>
               <label className="text-xs text-gray-400">Passphrase (if required)</label>
-              <input value={apiConfig.passphrase} onChange={e => setApiConfig(p => ({ ...p, passphrase: e.target.value }))} placeholder="OKX passphrase" className="w-full mt-1 bg-gray-700 text-white p-2 rounded" />
+              <input value={apiConfig.passphrase} onChange={e => setApiConfig(p => ({ ...p, passphrase: e.target.value }))} placeholder="Bitget passphrase (if set)" className="w-full mt-1 bg-gray-700 text-white p-2 rounded" />
             </div>
             <div className="flex items-end"><button onClick={connectExchange} className="w-full bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">Connect</button></div>
+            <div className="flex items-center mt-6 gap-2"><input id="realTrade" type="checkbox" checked={realTrading} onChange={() => setRealTrading(v => !v)} className="accent-red-500" /><label htmlFor="realTrade" className="text-xs">Enable Real Trading (Market Orders)</label></div>
           </div>
-          <p className="text-xs text-gray-500 mt-2">Keys are sent to your local backend only for signing. Do not expose them to the browser or third-parties.</p>
+          <p className="text-xs text-gray-500 mt-2">Supported: Binance, Bybit, Bitget, BingX. Keys are used only via your local backend with ccxt. Use at your own risk.</p>
         </div>
 
         {/* The rest is your original UI, trimmed to fit brevity where possible */}
