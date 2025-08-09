@@ -106,6 +106,10 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const [profitGoalUSD, setProfitGoalUSD] = useState(20);
   const [leverage, setLeverage] = useState(10);
   const [autoStopOnGoal, setAutoStopOnGoal] = useState(true);
+  const [partialTakePercent, setPartialTakePercent] = useState(50);
+  const [trailAtrMult, setTrailAtrMult] = useState(2);
+  const [maxDailyLossUSD, setMaxDailyLossUSD] = useState(50);
+  const [cooldownMinutes, setCooldownMinutes] = useState(2);
 
   const [liveData, setLiveData] = useState<LiveData>({
     BTCUSDT: { symbol: 'BTCUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
@@ -138,6 +142,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const analysisRef = useRef<number | null>(null);
   const priceHistoryRef = useRef<Record<SymbolKey, number[]>>({ BTCUSDT: [], ETHUSDT: [] });
   const apiIntervalRef = useRef<number | null>(null);
+  const lastEntryRef = useRef<number>(0);
 
   // Get current time in IST
   const getCurrentIST = () => new Date().toLocaleString('en-IN', {
@@ -270,6 +275,11 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     if (!isActive || !isConnected || positions.length >= settings.maxPositions || balance < 10) return;
     // Stop automatically if goal reached
     if (futuresEnabled && autoStopOnGoal && totalProfit >= profitGoalUSD) { setIsActive(false); return; }
+    // Guard: max daily loss
+    if (maxDailyLossUSD > 0 && dailyProfit <= -Math.abs(maxDailyLossUSD)) { setIsActive(false); return; }
+    // Cooldown
+    const nowMs = Date.now();
+    if (cooldownMinutes > 0 && nowMs - lastEntryRef.current < cooldownMinutes * 60 * 1000) return;
     const currentData = liveData[settings.selectedPair];
     const prices = priceHistoryRef.current[settings.selectedPair];
     if (!currentData?.price || prices.length < 30) return;
@@ -311,7 +321,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
       takeProfit = side === 'long' ? entryPrice * (1 + dynamicTP) : entryPrice * (1 - dynamicTP);
       stopLoss = side === 'long' ? entryPrice * (1 - dynamicSL) : entryPrice * (1 + dynamicSL);
     }
-    const newPosition: Position = { id: Date.now() + Math.random(), side, size, originalSize: size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss, takeProfit, reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date() } as Position;
+    const newPosition: Position = { id: Date.now() + Math.random(), side, size, originalSize: size, entryPrice, currentPrice, pnl: 0, timestamp: getCurrentIST(), symbol: settings.selectedPair, stopLoss, takeProfit, reason, confidence, rsi: indicators.rsi.toFixed(1), entryTime: new Date(), highestPrice: entryPrice, lowestPrice: entryPrice, perTradeTargetUSD: futuresEnabled ? Math.max(1, Math.min(Math.max(0, profitGoalUSD - totalProfit), profitGoalUSD)) : undefined } as Position;
 
     if (realTrading && futuresEnabled) {
       try {
@@ -332,6 +342,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     }
 
     setPositions(prev => [...prev, newPosition]);
+    lastEntryRef.current = Date.now();
     const trade: Trade = { id: Date.now() + Math.random(), type: 'OPEN', side, size, price: entryPrice, timestamp: getCurrentIST(), symbol: settings.selectedPair, pnl: 0, reason, confidence, spread: spread.toFixed(2) };
     setTrades(prev => [trade, ...prev.slice(0, 99)]);
   };
@@ -339,24 +350,65 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   // Update positions on price
   useEffect(() => {
     if (positions.length === 0) return;
+
     setPositions(prev => prev.map(pos => {
       const currentData = liveData[pos.symbol]; if (!currentData?.price) return pos;
       const currentPrice = pos.side === 'long' ? currentData.bid : currentData.ask;
       const priceDiff = currentPrice - pos.entryPrice;
       const pnl = pos.side === 'long' ? (priceDiff / pos.entryPrice) * pos.size * pos.entryPrice : -(priceDiff / pos.entryPrice) * pos.size * pos.entryPrice;
       const pnlPercent = (pnl / (pos.size * pos.entryPrice)) * 100;
-      const hitSL = (pos.side === 'long' && currentPrice <= pos.stopLoss) || (pos.side === 'short' && currentPrice >= pos.stopLoss);
-      const hitTP = (pos.side === 'long' && currentPrice >= pos.takeProfit) || (pos.side === 'short' && currentPrice <= pos.takeProfit);
-      if (hitSL || hitTP) {
-        setBalance(prev => prev + pnl); setDailyProfit(prev => prev + pnl); setTotalProfit(prev => prev + pnl);
-        setRealTimeStats(prev => { const total = prev.totalTrades + 1; const wins = pnl > 0 ? prev.winningTrades + 1 : prev.winningTrades; const losses = pnl < 0 ? prev.losingTrades + 1 : prev.losingTrades; const winRate = total > 0 ? (wins / total) * 100 : 0; return { totalTrades: total, winningTrades: wins, losingTrades: losses, winRate, avgWin: wins > 0 ? (prev.avgWin * (wins - 1) + (pnl > 0 ? pnl : 0)) / wins : 0, avgLoss: losses > 0 ? (prev.avgLoss * (losses - 1) + (pnl < 0 ? Math.abs(pnl) : 0)) / losses : 0, largestWin: Math.max(prev.largestWin, pnl > 0 ? pnl : 0), largestLoss: Math.max(prev.largestLoss, pnl < 0 ? Math.abs(pnl) : 0) }; });
-        const holdTime = ((Date.now() - pos.entryTime.getTime()) / 60000).toFixed(1);
-        const exitReason = hitTP ? 'Take Profit' : 'Stop Loss';
-        const closeTrade: Trade = { id: Date.now() + Math.random(), type: 'CLOSE', side: pos.side, size: pos.size, price: currentPrice, timestamp: getCurrentIST(), symbol: pos.symbol, pnl, pnlPercent: pnlPercent.toFixed(2), reason: exitReason, holdTime: `${holdTime}min` };
-        setTrades(prev => [closeTrade, ...prev.slice(0, 99)]);
-        return null as unknown as Position; // filtered out
+
+      // Track extremes
+      const highestPrice = pos.highestPrice ? Math.max(pos.highestPrice, currentPrice) : currentPrice;
+      const lowestPrice = pos.lowestPrice ? Math.min(pos.lowestPrice, currentPrice) : currentPrice;
+
+      // Trailing stop based on ATR multiple when futures enabled
+      let stopLoss = pos.stopLoss;
+      if (futuresEnabled) {
+        const prices = priceHistoryRef.current[pos.symbol];
+        const atr = prices.slice(-15).reduce((s, p, i, arr) => i === 0 ? s : s + Math.abs(p - arr[i-1]), 0) / Math.max(1, (15 - 1));
+        const trail = atr * trailAtrMult;
+        if (pos.side === 'long') {
+          const candidate = highestPrice - trail;
+          if (candidate > stopLoss) stopLoss = candidate;
+        } else {
+          const candidate = lowestPrice + trail;
+          if (candidate < stopLoss) stopLoss = candidate;
+        }
       }
-      return { ...pos, currentPrice, pnl, pnlPercent };
+
+      // Partial take profit at 50% of per-trade USD target
+      let newSize = pos.size;
+      let partialTaken = pos.partialTaken || false;
+      if (futuresEnabled && !partialTaken && pos.perTradeTargetUSD && partialTakePercent > 0) {
+        const targetUSDHalf = (pos.perTradeTargetUSD * partialTakePercent) / 100;
+        const reached = Math.abs((currentPrice - pos.entryPrice) * pos.size) >= targetUSDHalf;
+        if (reached) {
+          const closeSize = pos.size * 0.5;
+          // Record partial trade
+          const partTrade: Trade = { id: Date.now() + Math.random(), type: 'PARTIAL', side: pos.side, size: closeSize, price: currentPrice, timestamp: getCurrentIST(), symbol: pos.symbol, pnl: (currentPrice - pos.entryPrice) * (pos.side === 'long' ? 1 : -1) * closeSize, reason: 'Partial TP' } as Trade;
+          setTrades(prev => [partTrade, ...prev.slice(0, 99)]);
+          newSize = pos.size - closeSize;
+          partialTaken = true;
+        }
+      }
+
+      const hitStopLoss = (pos.side === 'long' && currentPrice <= stopLoss) || (pos.side === 'short' && currentPrice >= stopLoss);
+      const hitTakeProfit = (pos.side === 'long' && currentPrice >= pos.takeProfit) || (pos.side === 'short' && currentPrice <= pos.takeProfit);
+
+      if ((hitStopLoss || hitTakeProfit) && newSize <= pos.size) {
+        // Close position
+        const finalPnl = pos.side === 'long' ? (currentPrice - pos.entryPrice) * pos.size : (pos.entryPrice - currentPrice) * pos.size;
+        setBalance(prev => prev + finalPnl); setDailyProfit(prev => prev + finalPnl); setTotalProfit(prev => prev + finalPnl);
+        setRealTimeStats(prev => { const total = prev.totalTrades + 1; const wins = finalPnl > 0 ? prev.winningTrades + 1 : prev.winningTrades; const losses = finalPnl < 0 ? prev.losingTrades + 1 : prev.losingTrades; const winRate = total > 0 ? (wins / total) * 100 : 0; return { totalTrades: total, winningTrades: wins, losingTrades: losses, winRate, avgWin: wins > 0 ? (prev.avgWin * (wins - 1) + (finalPnl > 0 ? finalPnl : 0)) / wins : 0, avgLoss: losses > 0 ? (prev.avgLoss * (losses - 1) + (finalPnl < 0 ? Math.abs(finalPnl) : 0)) / losses : 0, largestWin: Math.max(prev.largestWin, finalPnl > 0 ? finalPnl : 0), largestLoss: Math.max(prev.largestLoss, finalPnl < 0 ? Math.abs(finalPnl) : 0) }; });
+        const holdTime = ((Date.now() - pos.entryTime.getTime()) / 60000).toFixed(1);
+        const exitReason = hitTakeProfit ? 'Take Profit' : 'Stop Loss';
+        const closeTrade: Trade = { id: Date.now() + Math.random(), type: 'CLOSE', side: pos.side, size: pos.size, price: currentPrice, timestamp: getCurrentIST(), symbol: pos.symbol, pnl: finalPnl, pnlPercent: pnlPercent.toFixed(2), reason: exitReason, holdTime: `${holdTime}min` };
+        setTrades(prev => [closeTrade, ...prev.slice(0, 99)]);
+        return null as unknown as Position;
+      }
+
+      return { ...pos, currentPrice, pnl, pnlPercent, highestPrice, lowestPrice, stopLoss, size: newSize, partialTaken };
     }).filter(Boolean) as Position[]);
   }, [liveData]);
 
@@ -514,6 +566,22 @@ const RealTimeCryptoTradingBot: React.FC = () => {
                   <div className="flex items-center justify-between">
                     <label className="text-sm text-gray-400">Auto-stop on goal</label>
                     <input type="checkbox" checked={autoStopOnGoal} onChange={() => setAutoStopOnGoal(v => !v)} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Partial take (%)</label>
+                    <input type="number" min={0} max={100} value={partialTakePercent} onChange={e => setPartialTakePercent(parseInt(e.target.value || '0'))} className="w-20 bg-gray-700 text-white p-2 rounded text-right" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Trailing ATR x</label>
+                    <input type="number" min={0} max={10} step={0.5} value={trailAtrMult} onChange={e => setTrailAtrMult(parseFloat(e.target.value || '0'))} className="w-20 bg-gray-700 text-white p-2 rounded text-right" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Max daily loss ($)</label>
+                    <input type="number" min={0} max={100000} value={maxDailyLossUSD} onChange={e => setMaxDailyLossUSD(parseFloat(e.target.value || '0'))} className="w-28 bg-gray-700 text-white p-2 rounded text-right" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Cooldown (min)</label>
+                    <input type="number" min={0} max={60} value={cooldownMinutes} onChange={e => setCooldownMinutes(parseInt(e.target.value || '0'))} className="w-20 bg-gray-700 text-white p-2 rounded text-right" />
                   </div>
                   <div className="text-xs text-gray-400">
                     Est. size: {(investPerTradeUSD * leverage / Math.max(1, liveData[settings.selectedPair].price)).toFixed(6)} {settings.selectedPair.replace('USDT','')}
