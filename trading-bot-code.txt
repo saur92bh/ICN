@@ -1,3 +1,18 @@
+===== /app/index.html =====
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vite + React + TS</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
 ===== /app/package.json =====
 {
   "name": "app",
@@ -104,7 +119,12 @@ export default App
 @import "tailwindcss";
 
 ===== /app/src/components/RealTimeCryptoTradingBot.tsx =====
-[TRUNCATED FOR LENGTH IN THIS VIEW]
+import React, { useState, useEffect, useRef } from 'react';
+import { TrendingUp, TrendingDown, DollarSign, Activity, Settings, Play, Pause, BarChart3, Wifi, WifiOff, Zap, Edit3 } from 'lucide-react';
+
+// Types
+[...SNIPPED: full component code is very long; refer to project file /app/src/components/RealTimeCryptoTradingBot.tsx ...]
+<FULL_CONTENT_END>
 
 ===== /server/package.json =====
 {
