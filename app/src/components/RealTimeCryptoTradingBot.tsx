@@ -110,6 +110,10 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const [trailAtrMult, setTrailAtrMult] = useState(2);
   const [maxDailyLossUSD, setMaxDailyLossUSD] = useState(50);
   const [cooldownMinutes, setCooldownMinutes] = useState(2);
+  const [autoRotateAssets, setAutoRotateAssets] = useState(true);
+  const [autoScaleLeverage, setAutoScaleLeverage] = useState(true);
+  const [enableBreakeven, setEnableBreakeven] = useState(true);
+  const [maxHoldMinutes, setMaxHoldMinutes] = useState(60);
 
   const [liveData, setLiveData] = useState<LiveData>({
     BTCUSDT: { symbol: 'BTCUSDT', price: 0, change24h: 0, volume: 0, lastUpdate: null, bid: 0, ask: 0, istTime: null },
@@ -143,6 +147,7 @@ const RealTimeCryptoTradingBot: React.FC = () => {
   const priceHistoryRef = useRef<Record<SymbolKey, number[]>>({ BTCUSDT: [], ETHUSDT: [] });
   const apiIntervalRef = useRef<number | null>(null);
   const lastEntryRef = useRef<number>(0);
+  const pnlHistoryRef = useRef<number[]>([]);
 
   // Get current time in IST
   const getCurrentIST = () => new Date().toLocaleString('en-IN', {
@@ -266,6 +271,22 @@ const RealTimeCryptoTradingBot: React.FC = () => {
     const btcVolatility = Math.abs(btcData.change24h);
     const risk: 'low' | 'medium' | 'high' = btcVolatility > 8 ? 'high' : btcVolatility < 3 ? 'low' : 'medium';
     setRiskLevel(risk);
+
+    // Auto-rotate asset to stronger momentum
+    if (autoRotateAssets) {
+      const btcScore = (btcInd.signal === 'strong_buy' ? 2 : btcInd.signal === 'buy' ? 1 : btcInd.signal === 'sell' ? -1 : btcInd.signal === 'strong_sell' ? -2 : 0) + (btcData.change24h / 5);
+      const ethScore = (ethInd.signal === 'strong_buy' ? 2 : ethInd.signal === 'buy' ? 1 : ethInd.signal === 'sell' ? -1 : ethInd.signal === 'strong_sell' ? -2 : 0) + (ethData.change24h / 5);
+      const prefer = btcScore >= ethScore ? 'BTCUSDT' : 'ETHUSDT';
+      if (prefer !== settings.selectedPair) setSettings(prev => ({ ...prev, selectedPair: prefer as SymbolKey }));
+    }
+
+    // Auto-scale leverage with volatility (lower leverage in high vol)
+    if (autoScaleLeverage && futuresEnabled) {
+      const vol = Math.abs(liveData[settings.selectedPair].change24h);
+      const lv = Math.min(50, Math.max(2, Math.floor(20 / Math.max(1, vol / 2))));
+      if (lv !== leverage) setLeverage(lv);
+    }
+
     const currentTime = getCurrentIST();
     const analysis = `LIVE MARKET ANALYSIS - ${currentTime}\n\nBTC/USDT: $${btcData.price.toLocaleString()} (${btcData.change24h >= 0 ? '+' : ''}${btcData.change24h.toFixed(2)}%)\nETH/USDT: $${ethData.price.toLocaleString()} (${ethData.change24h >= 0 ? '+' : ''}${ethData.change24h.toFixed(2)}%)\n\nBTC RSI: ${btcInd.rsi.toFixed(1)} | Signal: ${btcInd.signal.toUpperCase()}\nETH RSI: ${ethInd.rsi.toFixed(1)} | Signal: ${ethInd.signal.toUpperCase()}\nBTC SMA20: $${btcInd.sma20.toFixed(2)}\nRisk: ${risk.toUpperCase()}\n\nPair: ${settings.selectedPair} | Spread: $${(liveData[settings.selectedPair].ask - liveData[settings.selectedPair].bid).toFixed(2)} | Volume (24h): $${(btcData.volume / 1_000_000).toFixed(0)}M\n`;
     setMarketAnalysis(analysis);
@@ -393,16 +414,30 @@ const RealTimeCryptoTradingBot: React.FC = () => {
         }
       }
 
+      // Break-even protection once price moves favorably by trail distance
+      if (enableBreakeven && futuresEnabled) {
+        const prices = priceHistoryRef.current[pos.symbol];
+        const atr = prices.slice(-15).reduce((s, p, i, arr) => i === 0 ? s : s + Math.abs(p - arr[i-1]), 0) / Math.max(1, (15 - 1));
+        const be = atr; // 1x ATR move to set break-even
+        if (pos.side === 'long' && currentPrice >= pos.entryPrice + be) stopLoss = Math.max(stopLoss, pos.entryPrice);
+        if (pos.side === 'short' && currentPrice <= pos.entryPrice - be) stopLoss = Math.min(stopLoss, pos.entryPrice);
+      }
+
+      // Max hold time
+      const holdMins = (Date.now() - pos.entryTime.getTime()) / 60000;
+      const timeExpired = maxHoldMinutes > 0 && holdMins >= maxHoldMinutes;
+
       const hitStopLoss = (pos.side === 'long' && currentPrice <= stopLoss) || (pos.side === 'short' && currentPrice >= stopLoss);
       const hitTakeProfit = (pos.side === 'long' && currentPrice >= pos.takeProfit) || (pos.side === 'short' && currentPrice <= pos.takeProfit);
 
-      if ((hitStopLoss || hitTakeProfit) && newSize <= pos.size) {
+      if ((hitStopLoss || hitTakeProfit || timeExpired) && newSize <= pos.size) {
         // Close position
         const finalPnl = pos.side === 'long' ? (currentPrice - pos.entryPrice) * pos.size : (pos.entryPrice - currentPrice) * pos.size;
         setBalance(prev => prev + finalPnl); setDailyProfit(prev => prev + finalPnl); setTotalProfit(prev => prev + finalPnl);
+        pnlHistoryRef.current.push((pnlHistoryRef.current.at(-1) || 0) + finalPnl);
         setRealTimeStats(prev => { const total = prev.totalTrades + 1; const wins = finalPnl > 0 ? prev.winningTrades + 1 : prev.winningTrades; const losses = finalPnl < 0 ? prev.losingTrades + 1 : prev.losingTrades; const winRate = total > 0 ? (wins / total) * 100 : 0; return { totalTrades: total, winningTrades: wins, losingTrades: losses, winRate, avgWin: wins > 0 ? (prev.avgWin * (wins - 1) + (finalPnl > 0 ? finalPnl : 0)) / wins : 0, avgLoss: losses > 0 ? (prev.avgLoss * (losses - 1) + (finalPnl < 0 ? Math.abs(finalPnl) : 0)) / losses : 0, largestWin: Math.max(prev.largestWin, finalPnl > 0 ? finalPnl : 0), largestLoss: Math.max(prev.largestLoss, finalPnl < 0 ? Math.abs(finalPnl) : 0) }; });
-        const holdTime = ((Date.now() - pos.entryTime.getTime()) / 60000).toFixed(1);
-        const exitReason = hitTakeProfit ? 'Take Profit' : 'Stop Loss';
+        const holdTime = holdMins.toFixed(1);
+        const exitReason = hitTakeProfit ? 'Take Profit' : hitStopLoss ? 'Stop Loss' : 'Time Exit';
         const closeTrade: Trade = { id: Date.now() + Math.random(), type: 'CLOSE', side: pos.side, size: pos.size, price: currentPrice, timestamp: getCurrentIST(), symbol: pos.symbol, pnl: finalPnl, pnlPercent: pnlPercent.toFixed(2), reason: exitReason, holdTime: `${holdTime}min` };
         setTrades(prev => [closeTrade, ...prev.slice(0, 99)]);
         return null as unknown as Position;
@@ -568,6 +603,22 @@ const RealTimeCryptoTradingBot: React.FC = () => {
                     <input type="checkbox" checked={autoStopOnGoal} onChange={() => setAutoStopOnGoal(v => !v)} />
                   </div>
                   <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Auto-rotate assets</label>
+                    <input type="checkbox" checked={autoRotateAssets} onChange={() => setAutoRotateAssets(v => !v)} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Auto-scale leverage</label>
+                    <input type="checkbox" checked={autoScaleLeverage} onChange={() => setAutoScaleLeverage(v => !v)} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Break-even stop</label>
+                    <input type="checkbox" checked={enableBreakeven} onChange={() => setEnableBreakeven(v => !v)} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-400">Max hold (min)</label>
+                    <input type="number" min={0} max={240} value={maxHoldMinutes} onChange={e => setMaxHoldMinutes(parseInt(e.target.value || '0'))} className="w-20 bg-gray-700 text-white p-2 rounded text-right" />
+                  </div>
+                  <div className="flex items-center justify-between">
                     <label className="text-sm text-gray-400">Partial take (%)</label>
                     <input type="number" min={0} max={100} value={partialTakePercent} onChange={e => setPartialTakePercent(parseInt(e.target.value || '0'))} className="w-20 bg-gray-700 text-white p-2 rounded text-right" />
                   </div>
@@ -688,6 +739,8 @@ const RealTimeCryptoTradingBot: React.FC = () => {
             </div>
             <div className="text-sm text-gray-500">{getCurrentIST()} | Real-Time Crypto Trading Bot</div>
           </div>
+
+          {/* Quick Live Stats */}
           <div className="grid grid-cols-2 md:grid-cols-8 gap-3 text-center">
             <div className="bg-gray-900 p-3 rounded"><div className="text-lg font-bold text-blue-400">{trades.filter(t => t.type === 'OPEN').length}</div><div className="text-xs text-gray-400">Opened</div></div>
             <div className="bg-gray-900 p-3 rounded"><div className="text-lg font-bold text-green-400">{realTimeStats.winningTrades}</div><div className="text-xs text-gray-400">Winners</div></div>
@@ -698,6 +751,31 @@ const RealTimeCryptoTradingBot: React.FC = () => {
             <div className="bg-gray-900 p-3 rounded"><div className="text-lg font-bold text-yellow-400">{realTimeStats.largestWin > 0 ? `${realTimeStats.largestWin.toFixed(0)}` : '$0'}</div><div className="text-xs text-gray-400">Best Win</div></div>
             <div className="bg-gray-900 p-3 rounded"><div className="text-lg font-bold text-orange-400">{(balance * settings.maxRiskPerTrade / 100).toFixed(0)}</div><div className="text-xs text-gray-400">Risk/Trade</div></div>
           </div>
+
+          {/* Mini charts */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+            <div className="bg-gray-900 p-3 rounded border border-gray-800">
+              <div className="text-xs text-gray-400 mb-2">Price Sparkline ({settings.selectedPair})</div>
+              <div className="h-12 flex items-end gap-1">
+                {priceHistoryRef.current[settings.selectedPair].slice(-50).map((p, i, arr) => {
+                  const min = Math.min(...arr); const max = Math.max(...arr); const h = max === min ? 2 : Math.max(2, Math.floor(((p - min) / (max - min)) * 40) + 2);
+                  return <div key={i} className="bg-blue-500" style={{ width: 2, height: h }} />
+                })}
+              </div>
+            </div>
+            <div className="bg-gray-900 p-3 rounded border border-gray-800">
+              <div className="text-xs text-gray-400 mb-2">Cumulative P&L Sparkline</div>
+              <div className="h-12 flex items-end gap-1">
+                {pnlHistoryRef.current.slice(-50).map((p, i, arr) => {
+                  const min = Math.min(...arr, 0); const max = Math.max(...arr, 0); const h = max === min ? 2 : Math.max(2, Math.floor(((p - min) / (max - min)) * 40) + 2);
+                  const color = p >= 0 ? 'bg-green-500' : 'bg-red-500';
+                  return <div key={i} className={color} style={{ width: 2, height: h }} />
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Live Market Status */}
           <div className="mt-4 pt-4 border-t border-gray-700 text-xs text-gray-500 flex justify-between items-center">
             <div>LIVE: CoinGecko & Binance WebSocket | Next trade check in {isActive ? `${settings.tradingInterval}s` : 'PAUSED'} | Pair: {settings.selectedPair}</div>
             <div className="flex items-center gap-4"><span>API: {isConnected ? 'Connected' : 'Connecting'}</span><span>Last update: {lastDataUpdate ? lastDataUpdate.toLocaleTimeString() : 'Pending'}</span></div>
