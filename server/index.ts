@@ -37,7 +37,7 @@ function makeFuturesClient(keys: { exchange: string; apiKey: string; apiSecret: 
     case 'bybit':
       return new ccxt.bybit({ ...common, options: { defaultType: 'swap' } });
     case 'bitget':
-      return new ccxt.bitget({ ...common, options: { defaultType: 'swap' } });
+      return new ccxt.bitget({ ...common, options: { defaultType: 'swap', defaultSubType: 'linear' } });
     case 'bingx':
       return new ccxt.bingx({ ...common, options: { defaultType: 'swap' } });
     default:
@@ -65,12 +65,27 @@ app.post('/api/ping', async (req, res) => {
   }
   currentKeys = { exchange, apiKey, apiSecret, passphrase };
   try {
-    const spot = makeExchangeClient(currentKeys);
-    let ok = false;
-    try { await spot.fetchBalance(); ok = true; } catch { ok = true; }
-    return res.json({ ok, exchange });
+    const fut = makeFuturesClient(currentKeys);
+    try {
+      await fut.fetchBalance();
+      return res.json({ ok: true, exchange, mode: 'futures' });
+    } catch (e1: any) {
+      const spot = makeExchangeClient(currentKeys);
+      try {
+        await spot.fetchBalance();
+        return res.json({ ok: true, exchange, mode: 'spot' });
+      } catch (e2: any) {
+        return res.status(401).json({
+          ok: false,
+          error: 'Auth failed',
+          exchange,
+          futError: e1?.message || String(e1),
+          spotError: e2?.message || String(e2),
+        });
+      }
+    }
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e.message });
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 
