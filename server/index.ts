@@ -151,5 +151,91 @@ app.post('/api/futures/order', async (req, res) => {
   }
 });
 
+// --- News / Macro Risk Guard -------------------------------------------------
+
+type NewsSignal = {
+  ok: true;
+  minutes: number;
+  riskScore: number; // 0-100
+  highRisk: boolean;
+  reasons: string[];
+  headlines: Array<{ title: string; url: string; source?: string; seendate?: string }>;
+} | { ok: false; error: string };
+
+let lastNewsCache: { ts: number; minutes: number; data: NewsSignal } | null = null;
+
+async function fetchGdeltNews(minutes: number): Promise<NewsSignal> {
+  try {
+    // Use GDELT docs API (no key). Filter crypto keywords; last N minutes; top ~50-75 records.
+    const query = encodeURIComponent('(bitcoin OR ethereum OR crypto OR "btc" OR "eth")');
+    const timespan = `${Math.max(5, Math.min(240, minutes))}m`;
+    const maxrecords = 75;
+    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${query}&mode=ArtList&format=json&maxrecords=${maxrecords}&timespan=${timespan}`;
+    const f: any = (globalThis as any).fetch;
+    const resp = await f(url);
+    if (!resp?.ok) return { ok: false, error: `gdelt_http_${resp?.status || 'err'}` };
+    const json: any = await resp.json();
+    const arts: any[] = json?.articles || [];
+
+    const negativeKeywords = [
+      'hack', 'exploit', 'breach', 'leak', 'rug pull', 'attack', 'phishing', 'exploit',
+      'lawsuit', 'sue', 'investigation', 'probe', 'indictment',
+      'bankruptcy', 'insolvency', 'chapter 11', 'chapter 15',
+      'outage', 'downtime', 'halt', 'halted', 'halt trading', 'trading halt',
+      'depeg', 'de-pegg', 'de peg', 'unpeg', 'un-pegg',
+      'liquidation', 'cascade', 'margin call',
+      'sanction', 'ban', 'freeze', 'blacklist',
+      'scam', 'fraud', 'ponzi', 'crime', 'theft', 'stolen',
+      'sell-off', 'dump', 'plunge', 'crash', 'collapse', 'panic'
+    ];
+    const regulatorKeywords = ['sec', 'cftc', 'doj', 'treasury', 'fca', 'esma', 'mas'];
+    const positiveKeywords = ['approval', 'approve', 'etf approval', 'upgrade', 'partnership', 'launch', 'adoption'];
+
+    let negHits = 0;
+    let regulatorHits = 0;
+    let posHits = 0;
+    const reasons: string[] = [];
+
+    const headlines = arts.slice(0, 50).map(a => ({
+      title: a?.title || '',
+      url: a?.url || '',
+      source: a?.sourceCommonName || a?.domain || '',
+      seendate: a?.seendate || ''
+    }));
+
+    for (const a of arts) {
+      const text = `${a?.title || ''} ${a?.seendate || ''} ${a?.sourceCommonName || ''}`.toLowerCase();
+      for (const k of negativeKeywords) { if (text.includes(k)) { negHits += 1; reasons.push(`neg:${k}`); } }
+      for (const k of regulatorKeywords) { if (text.includes(k)) { regulatorHits += 1; reasons.push(`reg:${k}`); } }
+      for (const k of positiveKeywords) { if (text.includes(k)) { posHits += 1; } }
+    }
+
+    // Heuristic scoring. Negative dominates, regulator adds extra weight. Cap 100.
+    let riskScore = Math.min(100, negHits * 8 + regulatorHits * 10 - Math.min(20, posHits * 2));
+    const highRisk = riskScore >= 30 || (negHits >= 4) || (regulatorHits >= 2);
+
+    return { ok: true, minutes, riskScore, highRisk, reasons: Array.from(new Set(reasons)).slice(0, 10), headlines };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+app.get('/api/news-signal', async (req, res) => {
+  try {
+    const minutes = Number(req.query.minutes || 60) || 60;
+    const now = Date.now();
+    if (lastNewsCache && now - lastNewsCache.ts < 90_000 && lastNewsCache.minutes === minutes) {
+      return res.json(lastNewsCache.data);
+    }
+    const data = await fetchGdeltNews(minutes);
+    lastNewsCache = { ts: now, minutes, data };
+    return res.json(data);
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// ----------------------------------------------------------------------------
+
 const port = process.env.PORT || 5174;
 app.listen(port, () => console.log(`API listening on http://localhost:${port}`));
