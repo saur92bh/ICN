@@ -8,6 +8,11 @@ app.use(cors());
 app.use(express.json());
 
 let currentKeys: { exchange: string; apiKey: string; apiSecret: string; passphrase?: string } | null = null;
+// Cached low-latency futures client and state
+let futClient: any | null = null;
+let futId: string | null = null;
+let futMarketsLoaded = false;
+let bitgetPrepared = false;
 
 function makeExchangeClient(keys: { exchange: string; apiKey: string; apiSecret: string; passphrase?: string }) {
   const id = keys.exchange.toLowerCase();
@@ -65,7 +70,13 @@ app.post('/api/ping', async (req: Request, res: Response) => {
   }
   currentKeys = { exchange, apiKey, apiSecret, passphrase };
   try {
+    // Prepare and cache a futures client for low-latency trading
     const fut = makeFuturesClient(currentKeys);
+    futClient = fut;
+    futId = exchange.toLowerCase();
+    bitgetPrepared = false;
+    futMarketsLoaded = false;
+    try { await fut.loadMarkets(); futMarketsLoaded = true; } catch {}
     try {
       await fut.fetchBalance();
       return res.json({ ok: true, exchange, mode: 'futures' });
@@ -107,8 +118,11 @@ app.post('/api/order', async (req: Request, res: Response) => {
 
 async function prepareBitget(client: any, symbol: string, leverage: number, orderSide: 'buy' | 'sell') {
   const holdSide = orderSide === 'buy' ? 'long' : 'short';
-  try { await (client as any).setPositionMode(false, symbol, { productType: 'USDT-FUTURES' }); } catch {}
-  try { await (client as any).setMarginMode('cross', symbol, { productType: 'USDT-FUTURES', marginCoin: 'USDT' }); } catch {}
+  if (!bitgetPrepared) {
+    try { await (client as any).setPositionMode(false, symbol, { productType: 'USDT-FUTURES' }); } catch {}
+    try { await (client as any).setMarginMode('cross', symbol, { productType: 'USDT-FUTURES', marginCoin: 'USDT' }); } catch {}
+    bitgetPrepared = true;
+  }
   try { await (client as any).setLeverage(leverage, symbol, { productType: 'USDT-FUTURES', marginCoin: 'USDT', holdSide }); } catch {}
 }
 
@@ -117,9 +131,19 @@ app.post('/api/futures/order', async (req: Request, res: Response) => {
     if (!currentKeys) return res.status(400).json({ ok: false, error: 'Not connected' });
     const { symbol, side, investUSD, leverage, price } = req.body || {};
     if (!symbol || !side || !investUSD || !leverage || !price) return res.status(400).json({ ok: false, error: 'Missing order params' });
-
-    const client = makeFuturesClient(currentKeys);
-    await client.loadMarkets();
+    // Reuse cached client if possible for lower latency
+    const id = currentKeys.exchange.toLowerCase();
+    let client = futClient;
+    if (!client || futId !== id) {
+      client = makeFuturesClient(currentKeys);
+      futClient = client;
+      futId = id;
+      futMarketsLoaded = false;
+      bitgetPrepared = false;
+    }
+    if (!futMarketsLoaded) {
+      try { await client.loadMarkets(); futMarketsLoaded = true; } catch {}
+    }
     const normalized = toFuturesSymbol(symbol, currentKeys.exchange);
     const market = client.market(normalized);
     const orderSide: 'buy' | 'sell' = side.toLowerCase() === 'long' || side.toLowerCase() === 'buy' ? 'buy' : 'sell';
