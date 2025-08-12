@@ -1,0 +1,54 @@
+{
+  "name": "ema-strategy-trading-bot",
+  "version": "1.0.0",
+  "description": "Professional Crypto Trading Bot with EMA Strategy",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "keywords": ["trading", "crypto", "bot", "ema", "strategy"],
+  "author": "Trading Bot Engineer",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "ws": "^8.14.2",
+    "axios": "^1.6.0",
+    "crypto": "^1.0.1",
+    "node-cron": "^3.0.3",
+    "winston": "^3.11.0",
+    "sqlite3": "^5.1.6",
+    "moment-timezone": "^0.5.43",
+    "technicalindicators": "^3.1.0"
+  },
+  "build": {
+    "appId": "com.tradingbot.ema-strategy",
+    "productName": "EMA Strategy Trading Bot",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
+  }
+}
