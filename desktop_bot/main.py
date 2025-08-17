@@ -1290,7 +1290,7 @@ class APISetupDialog:
 
         instruction_label = tk.Label(content_frame, text=instructions,
                                      font=('Segoe UI', 11), bg=bg_secondary, fg=text_primary,
-                                     justify=tk.LEFT)
+                                     justify=tk.LEFT, wraplength=520)
         instruction_label.pack(padx=30, pady=20)
 
         # API key input frame
