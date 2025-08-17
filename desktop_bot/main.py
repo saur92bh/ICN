@@ -519,7 +519,8 @@ class DataManager:
         if df.empty:
             return pd.DataFrame()
 
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', format='mixed')
+        df = df.dropna(subset=['timestamp'])
         df = df.set_index('timestamp')
         df.columns = ['close', 'high', 'low', 'volume']
 
@@ -533,7 +534,10 @@ class DataManager:
         cursor = conn.cursor()
         rows = []
         for ts, row in df.iterrows():
-            ts_py = ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else (pd.to_datetime(ts).to_pydatetime() if not isinstance(ts, datetime) else ts)
+            try:
+                ts_py = ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else (pd.to_datetime(ts, errors='coerce', format='mixed').to_pydatetime() if not isinstance(ts, datetime) else ts)
+            except Exception:
+                ts_py = pd.to_datetime(ts, errors='coerce').to_pydatetime()
             rows.append((
                 symbol,
                 float(row.get('close', row.get('price', 0.0)) or 0.0),
