@@ -19,8 +19,33 @@ from dataclasses import dataclass
 import sqlite3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import sys
+import logging
 
 warnings.filterwarnings('ignore')
+
+# Ensure requests has certificates in frozen exe
+try:
+    import certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+except Exception:
+    pass
+
+# Basic file logging to help diagnose silent startup failures on Windows exe
+try:
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.getcwd()
+    log_path = os.path.join(base_dir, 'bot.log')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(message)s',
+        handlers=[logging.FileHandler(log_path, encoding='utf-8')]
+    )
+    logging.info('CryptoTradingBot starting...')
+except Exception:
+    pass
 
 
 @dataclass
