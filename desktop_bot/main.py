@@ -564,11 +564,18 @@ class ModernCryptoTradingBot:
         
         # Track last emitted signals per symbol to log only on change
         self._last_emitted_signals: Dict[str, str] = {}
+        
+        # Default risk parameters for targets (editable later via UI if needed)
+        self.tp_pct = 1.5  # take-profit percent
+        self.sl_pct = 0.8  # stop-loss percent
 
         # Initialize GUI
         self.setup_styles()
         self.create_widgets()
         self.setup_layout()
+        
+        # Create signal alert window (separate) and keep hidden until used
+        self.signal_window = SignalAlertWindow(self.root, self)
 
         # Start initial data fetch
         self.update_data()
@@ -860,6 +867,9 @@ class ModernCryptoTradingBot:
         self.start_button.config(state='disabled')
         self.stop_button.config(state='normal')
         self.status_var.set("🟢 Running")
+        
+        # Ensure signal window is visible when running
+        self.signal_window.open()
 
         # Start background thread
         self.bot_thread = threading.Thread(target=self.bot_loop, daemon=True)
@@ -955,11 +965,16 @@ class ModernCryptoTradingBot:
 
                     widget['signal'].config(text=signal_text, fg=signal_color)
 
-                    # Log on change for BUY/SELL
+                    # Log on change for BUY/SELL and show in separate signal window
                     prev = self._last_emitted_signals.get(symbol)
                     if signal in ("BUY", "SELL") and signal != prev:
                         self.log_signal(f"⚡ {symbol}: {signal} ({confidence:.1f}% confidence)")
                         self._last_emitted_signals[symbol] = signal
+                        if signal == "BUY":
+                            entry = float(self.current_data[symbol].price)
+                            tp = round(entry * (1 + self.tp_pct / 100.0), 6)
+                            sl = round(entry * (1 - self.sl_pct / 100.0), 6)
+                            self.signal_window.add_signal(symbol, "BUY", entry, tp, sl, datetime.now())
 
     def update_analysis(self):
         """Update current analysis panel"""
@@ -1347,6 +1362,119 @@ def main():
             messagebox.showerror("Error", f"Failed to start application:\n{str(e)}")
         except Exception:
             print(f"Error: {e}")
+
+
+class SignalAlertWindow:
+    """Separate window to display actionable BUY signals with a mini chart."""
+
+    def __init__(self, parent: tk.Tk, app: ModernCryptoTradingBot):
+        self.parent = parent
+        self.app = app
+
+        # Create toplevel but keep hidden until opened explicitly
+        self.top = tk.Toplevel(parent)
+        self.top.title("🎯 Trade Signals")
+        self.top.geometry("800x600")
+        self.top.configure(bg=app.colors['bg_primary'])
+        self.top.withdraw()
+        self.top.protocol("WM_DELETE_WINDOW", self.hide)
+
+        # Layout frames
+        list_frame = tk.Frame(self.top, bg=app.colors['bg_secondary'])
+        chart_frame = tk.Frame(self.top, bg=app.colors['bg_secondary'])
+        list_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+        chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Controls on list side
+        header = tk.Label(list_frame, text=f"TP: +{app.tp_pct:.1f}%  SL: -{app.sl_pct:.1f}%",
+                          bg=app.colors['bg_secondary'], fg=app.colors['text_primary'],
+                          font=('Segoe UI', 10, 'bold'))
+        header.pack(anchor='w', pady=(0, 6))
+
+        columns = ("time", "symbol", "signal", "entry", "tp", "sl")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=20)
+        for col, w in zip(columns, [110, 70, 70, 100, 100, 100]):
+            self.tree.heading(col, text=col.upper())
+            self.tree.column(col, width=w, anchor='center')
+        self.tree.pack(fill=tk.Y, expand=False)
+        self.tree.bind('<<TreeviewSelect>>', self.on_select)
+
+        # Mini chart using matplotlib
+        self.fig_sig = Figure(figsize=(5, 4), facecolor=app.colors['bg_secondary'])
+        self.ax_sig = self.fig_sig.add_subplot(111)
+        self.ax_sig.set_facecolor(app.colors['bg_tertiary'])
+        self.canvas_sig = FigureCanvasTkAgg(self.fig_sig, master=chart_frame)
+        self.canvas_sig.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # Storage for signals
+        self._rows: list[dict] = []
+
+    def open(self):
+        try:
+            self.top.deiconify()
+            self.top.lift()
+        except Exception:
+            pass
+
+    def hide(self):
+        try:
+            self.top.withdraw()
+        except Exception:
+            pass
+
+    def add_signal(self, symbol: str, signal: str, entry: float, tp: float, sl: float, ts: datetime):
+        time_str = ts.strftime('%H:%M:%S')
+        self._rows.append({
+            'time': time_str,
+            'symbol': symbol,
+            'signal': signal,
+            'entry': entry,
+            'tp': tp,
+            'sl': sl,
+        })
+        self.tree.insert('', 'end', values=(time_str, symbol, signal, f"{entry:.6f}", f"{tp:.6f}", f"{sl:.6f}"))
+        # Auto show and render chart for this signal
+        self.open()
+        self.render_chart(symbol, entry, tp, sl)
+
+    def on_select(self, event=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        vals = self.tree.item(sel[0], 'values')
+        if not vals or len(vals) < 6:
+            return
+        _, symbol, _, entry, tp, sl = vals
+        try:
+            self.render_chart(symbol, float(entry), float(tp), float(sl))
+        except Exception:
+            pass
+
+    def render_chart(self, symbol: str, entry: float, tp: float, sl: float):
+        try:
+            df = self.app.data_manager.get_historical_data(symbol, hours=12)
+            self.ax_sig.clear()
+            if not df.empty:
+                times = df.index
+                prices = df['close']
+                self.ax_sig.plot(times, prices, color='#00d4aa', linewidth=1.8, label=f'{symbol} Price')
+                # Horizontal levels
+                self.ax_sig.axhline(y=entry, color='#1f6feb', linestyle='--', linewidth=1.2, label=f'Entry {entry:.4f}')
+                self.ax_sig.axhline(y=tp, color='#238636', linestyle='--', linewidth=1.2, label=f'TP {tp:.4f}')
+                self.ax_sig.axhline(y=sl, color='#da3633', linestyle='--', linewidth=1.2, label=f'SL {sl:.4f}')
+                # Current time marker
+                self.ax_sig.set_title(f'{symbol} Trade Plan', color='white', fontsize=12, fontweight='bold')
+                self.ax_sig.legend(loc='upper left')
+                self.ax_sig.grid(True, alpha=0.25)
+                self.ax_sig.tick_params(colors='white')
+                self.ax_sig.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            else:
+                self.ax_sig.set_title(f'{symbol} Trade Plan (no data yet)', color='white')
+            self.fig_sig.tight_layout()
+            self.canvas_sig.draw()
+        except Exception as e:
+            # Non-fatal rendering error
+            print(f"Signal window chart error: {e}")
 
 
 if __name__ == "__main__":
