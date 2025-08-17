@@ -1000,6 +1000,11 @@ class ModernCryptoTradingBot:
                             tp = round(entry * (1 + self.tp_pct / 100.0), 6)
                             sl = round(entry * (1 - self.sl_pct / 100.0), 6)
                             self.signal_window.add_signal(symbol, "BUY", entry, tp, sl, datetime.now())
+                        elif signal == "SELL":
+                            entry = float(self.current_data[symbol].price)
+                            tp = round(entry * (1 - self.tp_pct / 100.0), 6)
+                            sl = round(entry * (1 + self.sl_pct / 100.0), 6)
+                            self.signal_window.add_signal(symbol, "SELL", entry, tp, sl, datetime.now())
 
     def update_analysis(self):
         """Update current analysis panel"""
@@ -1433,6 +1438,7 @@ class SignalAlertWindow:
 
         # Storage for signals
         self._rows: list[dict] = []
+        self._last_rendered: Optional[dict] = None
 
     def open(self):
         try:
@@ -1449,18 +1455,19 @@ class SignalAlertWindow:
 
     def add_signal(self, symbol: str, signal: str, entry: float, tp: float, sl: float, ts: datetime):
         time_str = ts.strftime('%H:%M:%S')
-        self._rows.append({
+        row = {
             'time': time_str,
             'symbol': symbol,
             'signal': signal,
             'entry': entry,
             'tp': tp,
             'sl': sl,
-        })
+        }
+        self._rows.append(row)
         self.tree.insert('', 'end', values=(time_str, symbol, signal, f"{entry:.6f}", f"{tp:.6f}", f"{sl:.6f}"))
         # Auto show and render chart for this signal
         self.open()
-        self.render_chart(symbol, entry, tp, sl)
+        self.render_chart(row)
 
     def on_select(self, event=None):
         sel = self.tree.selection()
@@ -1469,14 +1476,26 @@ class SignalAlertWindow:
         vals = self.tree.item(sel[0], 'values')
         if not vals or len(vals) < 6:
             return
-        _, symbol, _, entry, tp, sl = vals
+        _, symbol, sig, entry, tp, sl = vals
         try:
-            self.render_chart(symbol, float(entry), float(tp), float(sl))
+            row = {
+                'symbol': symbol,
+                'signal': sig,
+                'entry': float(entry),
+                'tp': float(tp),
+                'sl': float(sl),
+            }
+            self.render_chart(row)
         except Exception:
             pass
 
-    def render_chart(self, symbol: str, entry: float, tp: float, sl: float):
+    def render_chart(self, row: dict):
         try:
+            symbol = row['symbol']
+            entry = float(row['entry'])
+            tp = float(row['tp'])
+            sl = float(row['sl'])
+            side = row.get('signal', 'BUY').upper()
             df = self.app.data_manager.get_historical_data(symbol, hours=12)
             self.ax_sig.clear()
             if not df.empty:
@@ -1484,17 +1503,21 @@ class SignalAlertWindow:
                 prices = df['close']
                 self.ax_sig.plot(times, prices, color='#00d4aa', linewidth=1.8, label=f'{symbol} Price')
                 # Horizontal levels
-                self.ax_sig.axhline(y=entry, color='#1f6feb', linestyle='--', linewidth=1.2, label=f'Entry {entry:.4f}')
-                self.ax_sig.axhline(y=tp, color='#238636', linestyle='--', linewidth=1.2, label=f'TP {tp:.4f}')
-                self.ax_sig.axhline(y=sl, color='#da3633', linestyle='--', linewidth=1.2, label=f'SL {sl:.4f}')
-                # Current time marker
-                self.ax_sig.set_title(f'{symbol} Trade Plan', color='white', fontsize=12, fontweight='bold')
+                if side == 'BUY':
+                    self.ax_sig.axhline(y=entry, color='#1f6feb', linestyle='--', linewidth=1.2, label=f'Entry {entry:.4f}')
+                    self.ax_sig.axhline(y=tp, color='#238636', linestyle='--', linewidth=1.2, label=f'TP {tp:.4f}')
+                    self.ax_sig.axhline(y=sl, color='#da3633', linestyle='--', linewidth=1.2, label=f'SL {sl:.4f}')
+                else:
+                    self.ax_sig.axhline(y=entry, color='#f59e0b', linestyle='--', linewidth=1.2, label=f'Entry {entry:.4f}')
+                    self.ax_sig.axhline(y=tp, color='#238636', linestyle='--', linewidth=1.2, label=f'TP {tp:.4f}')
+                    self.ax_sig.axhline(y=sl, color='#da3633', linestyle='--', linewidth=1.2, label=f'SL {sl:.4f}')
+                self.ax_sig.set_title(f'{symbol} {side} Plan', color='white', fontsize=12, fontweight='bold')
                 self.ax_sig.legend(loc='upper left')
                 self.ax_sig.grid(True, alpha=0.25)
                 self.ax_sig.tick_params(colors='white')
                 self.ax_sig.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
             else:
-                self.ax_sig.set_title(f'{symbol} Trade Plan (no data yet)', color='white')
+                self.ax_sig.set_title(f'{symbol} {side} Plan (no data yet)', color='white')
             self.fig_sig.tight_layout()
             self.canvas_sig.draw()
         except Exception as e:
