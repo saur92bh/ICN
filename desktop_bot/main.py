@@ -1224,6 +1224,11 @@ class APISetupDialog:
         self.dialog.geometry("600x500")
         self.dialog.configure(bg='#0d1117')
         self.dialog.resizable(False, False)
+        # Bring to front to avoid being hidden behind other windows
+        try:
+            self.dialog.attributes('-topmost', True)
+        except Exception:
+            pass
 
         # Make modal
         self.dialog.transient(parent)
@@ -1232,6 +1237,11 @@ class APISetupDialog:
         # Center dialog
         self.center_dialog()
         self.create_widgets(preset_api_key)
+        # Drop topmost after a short delay so user can move other windows
+        try:
+            self.dialog.after(1200, lambda: self.dialog.attributes('-topmost', False))
+        except Exception:
+            pass
 
     def center_dialog(self):
         """Center dialog on screen"""
@@ -1346,6 +1356,10 @@ def main():
 
     root = tk.Tk()
     root.withdraw()  # Hide initially
+    try:
+        root.attributes('-topmost', True)
+    except Exception:
+        pass
 
     api_key = None
     if not preset_api:
@@ -1368,6 +1382,10 @@ def main():
 
     # Show main window
     root.deiconify()
+    try:
+        root.attributes('-topmost', False)
+    except Exception:
+        pass
 
     # Create application
     try:
@@ -1392,6 +1410,10 @@ def main():
             messagebox.showerror("Error", f"Failed to start application:\n{str(e)}")
         except Exception:
             print(f"Error: {e}")
+        try:
+            logging.exception("Startup error")
+        except Exception:
+            pass
 
 
 class SignalAlertWindow:
