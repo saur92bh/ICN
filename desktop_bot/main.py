@@ -1237,6 +1237,10 @@ class APISetupDialog:
         # Center dialog
         self.center_dialog()
         self.create_widgets(preset_api_key)
+        try:
+            self.dialog.deiconify(); self.dialog.lift(); self.dialog.focus_force()
+        except Exception:
+            pass
         # Drop topmost after a short delay so user can move other windows
         try:
             self.dialog.after(1200, lambda: self.dialog.attributes('-topmost', False))
@@ -1355,7 +1359,6 @@ def main():
     preset_api = os.getenv('CMC_API_KEY')
 
     root = tk.Tk()
-    root.withdraw()  # Hide initially
     try:
         root.attributes('-topmost', True)
     except Exception:
@@ -1363,7 +1366,7 @@ def main():
 
     api_key = None
     if not preset_api:
-        # Show API setup dialog
+        # Show API setup dialog immediately (do not withdraw root)
         setup_dialog = APISetupDialog(root)
         root.wait_window(setup_dialog.dialog)
 
@@ -1375,14 +1378,19 @@ def main():
         elif setup_dialog.result and setup_dialog.result not in ["DEMO", "FREE"]:
             api_key = setup_dialog.result
         else:
-            root.destroy()
+            try:
+                root.destroy()
+            except Exception:
+                pass
             return
     else:
         api_key = preset_api
 
     # Show main window
-    root.deiconify()
     try:
+        root.deiconify()
+        root.lift()
+        root.focus_force()
         root.attributes('-topmost', False)
     except Exception:
         pass
