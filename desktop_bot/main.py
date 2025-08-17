@@ -13,7 +13,7 @@ import requests
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 import warnings
 from dataclasses import dataclass
 import sqlite3
@@ -37,7 +37,7 @@ class CryptoData:
 class CryptoDataProvider:
     """Multi-source real-time crypto data provider"""
 
-    def __init__(self, cmc_api_key: str | None = None):
+    def __init__(self, cmc_api_key: Optional[str] = None):
         self.cmc_api_key = cmc_api_key
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'CryptoBot/1.0'})
@@ -52,6 +52,7 @@ class CryptoDataProvider:
         adapter = HTTPAdapter(max_retries=retries)
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
+        self.last_source = 'Unknown'
 
         # CoinMarketCap API setup
         if cmc_api_key:
@@ -67,25 +68,37 @@ class CryptoDataProvider:
     def get_real_time_data(self, symbols: List[str]) -> Dict[str, CryptoData]:
         """Get real-time data using multiple sources"""
 
+        result: Dict[str, CryptoData] = {}
+
         # Try CoinMarketCap first (if API key provided)
         if self.cmc_api_key:
             try:
-                return self._get_cmc_data(symbols)
+                result = self._get_cmc_data(symbols)
+                if result:
+                    self.last_source = 'CoinMarketCap'
+                    return result
             except Exception as e:
                 print(f"CMC API error: {e}")
 
         # Fallback to free APIs
         try:
-            return self._get_coingecko_data(symbols)
+            result = self._get_coingecko_data(symbols)
+            if result:
+                self.last_source = 'CoinGecko'
+                return result
         except Exception as e:
             print(f"CoinGecko API error: {e}")
 
         try:
-            return self._get_binance_data(symbols)
+            result = self._get_binance_data(symbols)
+            if result:
+                self.last_source = 'Binance'
+                return result
         except Exception as e:
             print(f"Binance API error: {e}")
 
         # Final fallback to demo data
+        self.last_source = 'Demo'
         return self._generate_demo_data(symbols)
 
     def _get_cmc_data(self, symbols: List[str]) -> Dict[str, CryptoData]:
@@ -128,7 +141,7 @@ class CryptoDataProvider:
             'SOL': 'solana',
             'ADA': 'cardano',
             'DOT': 'polkadot',
-            'MATIC': 'matic-network',
+            'MATIC': 'polygon-pos',
             'LINK': 'chainlink',
             'AVAX': 'avalanche-2',
             'UNI': 'uniswap',
@@ -1014,12 +1027,19 @@ class ModernCryptoTradingBot:
         if self.last_update:
             time_str = self.last_update.strftime('%Y-%m-%d %H:%M:%S')
             self.last_update_label.config(text=f"Last update: {time_str}")
-
+        
         # Update data source
-        if self.data_provider.cmc_api_key:
+        source = getattr(self.data_provider, 'last_source', 'Unknown')
+        if source == 'CoinMarketCap':
             self.data_source_label.config(text="Data: CoinMarketCap API")
+        elif source == 'CoinGecko':
+            self.data_source_label.config(text="Data: CoinGecko API")
+        elif source == 'Binance':
+            self.data_source_label.config(text="Data: Binance API")
+        elif source == 'Demo':
+            self.data_source_label.config(text="Data: Demo Mode")
         else:
-            self.data_source_label.config(text="Data: Free APIs + Demo")
+            self.data_source_label.config(text="Data: Unknown")
 
     def log_signal(self, message: str):
         """Add message to signals log"""
