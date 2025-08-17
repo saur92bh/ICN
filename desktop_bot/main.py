@@ -65,7 +65,7 @@ class CryptoDataProvider:
     def __init__(self, cmc_api_key: Optional[str] = None):
         self.cmc_api_key = cmc_api_key
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': 'CryptoBot/1.0'})
+        self.session.headers.update({'User-Agent': 'CryptoBot/1.0', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
 
         # Robust retries for flaky networks and 429s
         retries = Retry(
@@ -131,7 +131,8 @@ class CryptoDataProvider:
         url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
         params = {
             'symbol': ','.join(symbols),
-            'convert': 'USD'
+            'convert': 'USD',
+            'aux': 'num_market_pairs,cmc_rank,date_added,tags,platform,max_supply,circulating_supply,total_supply,is_active'
         }
 
         response = self.session.get(url, headers=self.cmc_headers, params=params, timeout=15)
@@ -593,6 +594,8 @@ class ModernCryptoTradingBot:
         
         # Track last emitted signals per symbol to log only on change
         self._last_emitted_signals: Dict[str, str] = {}
+        # Track last candle timestamp to avoid duplicate recalcs
+        self._last_candle_ts: Dict[str, datetime] = {}
         
         # Default risk parameters for targets (editable later via UI if needed)
         self.tp_pct = 1.5  # take-profit percent
@@ -994,35 +997,48 @@ class ModernCryptoTradingBot:
                 # Update trading signal
                 historical_data = self.data_manager.get_historical_data(symbol, hours=48)
                 if not historical_data.empty and len(historical_data) > 20:
-                    signal, confidence = self.strategy.analyze(historical_data)
+                    # Only compute on new candle boundary to reduce noise/duplicates
+                    last_ts = historical_data.index.max()
+                    prev_seen = self._last_candle_ts.get(symbol)
+                    if prev_seen is None or (isinstance(last_ts, pd.Timestamp) and last_ts.to_pydatetime() != prev_seen):
+                        self._last_candle_ts[symbol] = last_ts.to_pydatetime() if isinstance(last_ts, pd.Timestamp) else last_ts
+                        signal, confidence = self.strategy.analyze(historical_data)
 
-                    if signal == "BUY":
-                        signal_text = "🟢 BUY"
-                        signal_color = self.colors['accent']
-                    elif signal == "SELL":
-                        signal_text = "🔴 SELL"
-                        signal_color = self.colors['danger']
-                    else:
-                        signal_text = "⚪ HOLD"
-                        signal_color = self.colors['text_secondary']
-
-                    widget['signal'].config(text=signal_text, fg=signal_color)
-
-                    # Log on change for BUY/SELL and show in separate signal window
-                    prev = self._last_emitted_signals.get(symbol)
-                    if signal in ("BUY", "SELL") and signal != prev:
-                        self.log_signal(f"⚡ {symbol}: {signal} ({confidence:.1f}% confidence)")
-                        self._last_emitted_signals[symbol] = signal
                         if signal == "BUY":
-                            entry = float(self.current_data[symbol].price)
-                            tp = round(entry * (1 + self.tp_pct / 100.0), 6)
-                            sl = round(entry * (1 - self.sl_pct / 100.0), 6)
-                            self.signal_window.add_signal(symbol, "BUY", entry, tp, sl, datetime.now())
+                            signal_text = "🟢 BUY"
+                            signal_color = self.colors['accent']
                         elif signal == "SELL":
+                            signal_text = "🔴 SELL"
+                            signal_color = self.colors['danger']
+                        else:
+                            signal_text = "⚪ HOLD"
+                            signal_color = self.colors['text_secondary']
+
+                        widget['signal'].config(text=signal_text, fg=signal_color)
+
+                        # Log on change for BUY/SELL and show in separate signal window
+                        prev = self._last_emitted_signals.get(symbol)
+                        if signal in ("BUY", "SELL") and signal != prev:
+                            self.log_signal(f"⚡ {symbol}: {signal} ({confidence:.1f}% confidence)")
+                            self._last_emitted_signals[symbol] = signal
                             entry = float(self.current_data[symbol].price)
-                            tp = round(entry * (1 - self.tp_pct / 100.0), 6)
-                            sl = round(entry * (1 + self.sl_pct / 100.0), 6)
-                            self.signal_window.add_signal(symbol, "SELL", entry, tp, sl, datetime.now())
+                            if signal == "BUY":
+                                tp = round(entry * (1 + self.tp_pct / 100.0), 6)
+                                sl = round(entry * (1 - self.sl_pct / 100.0), 6)
+                                self.signal_window.add_signal(symbol, "BUY", entry, tp, sl, datetime.now())
+                            else:
+                                tp = round(entry * (1 - self.tp_pct / 100.0), 6)
+                                sl = round(entry * (1 + self.sl_pct / 100.0), 6)
+                                self.signal_window.add_signal(symbol, "SELL", entry, tp, sl, datetime.now())
+                    else:
+                        # Keep last signal text without re-triggering
+                        signal = self._last_emitted_signals.get(symbol, "HOLD")
+                        if signal == "BUY":
+                            widget['signal'].config(text="🟢 BUY", fg=self.colors['accent'])
+                        elif signal == "SELL":
+                            widget['signal'].config(text="🔴 SELL", fg=self.colors['danger'])
+                        else:
+                            widget['signal'].config(text="⚪ HOLD", fg=self.colors['text_secondary'])
 
     def update_analysis(self):
         """Update current analysis panel"""
@@ -1432,7 +1448,8 @@ class APISetupDialog:
             self.dialog.destroy()
         else:
             messagebox.showwarning("Invalid API Key",
-                                   "Please enter a valid API key or use demo mode.")
+                                   "Please enter a valid API key or use Free APIs/Demo.")
+            return
 
     def use_free(self):
         """Use free APIs"""
