@@ -697,6 +697,13 @@ class ModernCryptoTradingBot:
                                      font=('Segoe UI', 10, 'bold'), state='disabled')
         self.stop_button.grid(row=0, column=3, padx=5)
 
+        # Backtest button
+        self.backtest_button = tk.Button(controls_frame, text="🧪 Backtest",
+                                         command=self.run_backtest, width=10,
+                                         bg='#1f6feb', fg='white',
+                                         font=('Segoe UI', 10, 'bold'))
+        self.backtest_button.grid(row=0, column=4, padx=6)
+
         # Status indicator
         self.status_var = tk.StringVar(value="🔴 Stopped")
         status_label = tk.Label(controls_frame, textvariable=self.status_var,
@@ -1211,6 +1218,73 @@ class ModernCryptoTradingBot:
         except Exception as e:
             self.log_signal(f"⚠️ Seed history error: {e}")
 
+    def run_backtest(self):
+        """Simple backtest on stored data for the selected symbol; logs summary."""
+        symbol = self.symbol_var.get()
+        df = self.data_manager.get_historical_data(symbol, hours=48)
+        if df.empty or len(df) < 60:
+            # Try to seed from Binance if not enough data
+            try:
+                seed = self.data_provider.get_binance_klines(symbol, interval='1m', limit=500)
+                if not seed.empty:
+                    self.data_manager.store_ohlc_dataframe(symbol, seed)
+                    df = self.data_manager.get_historical_data(symbol, hours=48)
+            except Exception as e:
+                self.log_signal(f"⚠️ Backtest seed failed: {e}")
+        if df.empty or len(df) < 50:
+            self.log_signal(f"🧪 Backtest: not enough data for {symbol}")
+            return
+        # Walk forward and compute signals over time
+        prices = df['close'].copy()
+        wins = 0
+        losses = 0
+        holds = 0
+        entries = 0
+        tp_hits = 0
+        sl_hits = 0
+        equity = 0.0
+        risk = 1.0  # 1 unit per trade
+        window = 200
+        for i in range(50, len(prices)):
+            sub = df.iloc[:i]
+            signal, conf = self.strategy.analyze(sub)
+            if signal in ("BUY", "SELL"):
+                entries += 1
+                entry = float(prices.iloc[i-1])
+                if signal == "BUY":
+                    tp = entry * (1 + self.tp_pct/100.0)
+                    sl = entry * (1 - self.sl_pct/100.0)
+                    # Scan forward until TP or SL or next 60 bars
+                    hit = None
+                    for j in range(i, min(i+60, len(prices))):
+                        p = float(prices.iloc[j])
+                        if p >= tp:
+                            hit = 'TP'; break
+                        if p <= sl:
+                            hit = 'SL'; break
+                else:
+                    tp = entry * (1 - self.tp_pct/100.0)
+                    sl = entry * (1 + self.sl_pct/100.0)
+                    hit = None
+                    for j in range(i, min(i+60, len(prices))):
+                        p = float(prices.iloc[j])
+                        if p <= tp:
+                            hit = 'TP'; break
+                        if p >= sl:
+                            hit = 'SL'; break
+                if hit == 'TP':
+                    tp_hits += 1
+                    wins += 1
+                    equity += risk * (self.tp_pct/100.0)
+                elif hit == 'SL':
+                    sl_hits += 1
+                    losses += 1
+                    equity -= risk * (self.sl_pct/100.0)
+                else:
+                    holds += 1
+        self.log_signal(
+            f"🧪 Backtest {symbol}: entries={entries}, TP={tp_hits}, SL={sl_hits}, holds={holds}, equity≈{equity:.4f}R")
+
 
 class APISetupDialog:
     """Modern API setup dialog"""
@@ -1221,7 +1295,7 @@ class APISetupDialog:
         # Create dialog
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("🔑 API Configuration")
-        self.dialog.geometry("600x500")
+        self.dialog.geometry("600x420")
         self.dialog.configure(bg='#0d1117')
         self.dialog.resizable(False, False)
         # Bring to front to avoid being hidden behind other windows
@@ -1241,6 +1315,10 @@ class APISetupDialog:
             self.dialog.deiconify(); self.dialog.lift(); self.dialog.focus_force()
         except Exception:
             pass
+
+        # Auto-fallback to Free APIs after 8 seconds if no choice is made
+        self.dialog.after(8000, self._auto_choose_free_if_idle)
+
         # Drop topmost after a short delay so user can move other windows
         try:
             self.dialog.after(1200, lambda: self.dialog.attributes('-topmost', False))
@@ -1251,8 +1329,8 @@ class APISetupDialog:
         """Center dialog on screen"""
         self.dialog.update_idletasks()
         x = (self.dialog.winfo_screenwidth() // 2) - 300
-        y = (self.dialog.winfo_screenheight() // 2) - 250
-        self.dialog.geometry(f"600x500+{x}+{y}")
+        y = (self.dialog.winfo_screenheight() // 2) - 210
+        self.dialog.geometry(f"600x420+{x}+{y}")
 
     def create_widgets(self, preset_api_key: str | None = None):
         """Create dialog widgets"""
@@ -1265,37 +1343,38 @@ class APISetupDialog:
 
         # Title
         title_label = tk.Label(self.dialog, text="🚀 Crypto Trading Bot Setup",
-                               font=('Segoe UI', 24, 'bold'), bg=bg_primary, fg=text_primary)
-        title_label.pack(pady=30)
+                               font=('Segoe UI', 20, 'bold'), bg=bg_primary, fg=text_primary)
+        title_label.pack(pady=(18, 10))
 
         # Main content frame
         content_frame = tk.Frame(self.dialog, bg=bg_secondary, relief='solid', bd=1)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=20)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
 
-        # Instructions
-        instructions = (
-            "\n🔑 API Configuration (Optional)\n\n"
-            "For the best experience with real-time data, you can configure an API key:\n\n"
-            "1. CoinMarketCap API (Recommended):\n"
-            "   • Visit: https://pro.coinmarketcap.com\n"
-            "   • Sign up for a free account (333 calls/day)\n"
-            "   • Get your API key from the dashboard\n\n"
-            "2. Alternative: The bot can use free APIs (CoinGecko, Binance)\n"
-            "   • Limited features but still functional\n"
-            "   • No registration required\n"
-            "3. Demo Mode: \n"
-            "   • Simulated data for testing\n"
-            "   • All features available for learning\n"
-        )
+        # Buttons frame (top, always visible)
+        buttons_frame = tk.Frame(content_frame, bg=bg_secondary)
+        buttons_frame.pack(pady=12)
 
-        instruction_label = tk.Label(content_frame, text=instructions,
-                                     font=('Segoe UI', 11), bg=bg_secondary, fg=text_primary,
-                                     justify=tk.LEFT, wraplength=520)
-        instruction_label.pack(padx=30, pady=20)
+        api_btn = tk.Button(buttons_frame, text="🔑 Use API Key",
+                            command=self.use_api, width=16, height=2,
+                            bg='#1f6feb', fg='white', font=('Segoe UI', 11, 'bold'),
+                            relief='flat', cursor='hand2')
+        api_btn.pack(side=tk.LEFT, padx=8)
 
-        # API key input frame
+        skip_btn = tk.Button(buttons_frame, text="⚡ Free APIs",
+                             command=self.use_free, width=14, height=2,
+                             bg='#6f42c1', fg='white', font=('Segoe UI', 11, 'bold'),
+                             relief='flat', cursor='hand2')
+        skip_btn.pack(side=tk.LEFT, padx=8)
+
+        demo_btn = tk.Button(buttons_frame, text="🎮 Start Demo",
+                             command=self.start_demo, width=14, height=2,
+                             bg=accent, fg='white', font=('Segoe UI', 11, 'bold'),
+                             relief='flat', cursor='hand2')
+        demo_btn.pack(side=tk.LEFT, padx=8)
+
+        # API key input frame (immediately below buttons)
         input_frame = tk.Frame(content_frame, bg=bg_secondary)
-        input_frame.pack(pady=20)
+        input_frame.pack(pady=8)
 
         tk.Label(input_frame, text="CoinMarketCap API Key:",
                  font=('Segoe UI', 12, 'bold'), bg=bg_secondary, fg=text_primary).pack()
@@ -1303,34 +1382,24 @@ class APISetupDialog:
         self.api_entry = tk.Entry(input_frame, width=50, font=('Segoe UI', 11),
                                   show="*", bg='#21262d', fg=text_primary,
                                   insertbackground=text_primary, relief='solid', bd=1)
-        self.api_entry.pack(pady=10)
+        self.api_entry.pack(pady=8)
         if preset_api_key:
             self.api_entry.insert(0, preset_api_key)
+        try:
+            self.api_entry.focus_set()
+        except Exception:
+            pass
 
-        # Buttons frame
-        buttons_frame = tk.Frame(content_frame, bg=bg_secondary)
-        buttons_frame.pack(pady=30)
-
-        # Demo button
-        demo_btn = tk.Button(buttons_frame, text="🎮 Start Demo Mode",
-                             command=self.start_demo, width=18, height=2,
-                             bg=accent, fg='white', font=('Segoe UI', 12, 'bold'),
-                             relief='flat', cursor='hand2')
-        demo_btn.pack(side=tk.LEFT, padx=10)
-
-        # API button
-        api_btn = tk.Button(buttons_frame, text="🔑 Use API Key",
-                            command=self.use_api, width=15, height=2,
-                            bg='#1f6feb', fg='white', font=('Segoe UI', 12, 'bold'),
-                            relief='flat', cursor='hand2')
-        api_btn.pack(side=tk.LEFT, padx=10)
-
-        # Skip button
-        skip_btn = tk.Button(buttons_frame, text="⚡ Free APIs",
-                             command=self.use_free, width=15, height=2,
-                             bg='#6f42c1', fg='white', font=('Segoe UI', 12, 'bold'),
-                             relief='flat', cursor='hand2')
-        skip_btn.pack(side=tk.LEFT, padx=10)
+        # Short instructions (compact)
+        instructions = (
+            "🔑 Use API Key for best real-time data (CoinMarketCap).\n"
+            "⚡ Or choose Free APIs (CoinGecko/Binance).\n"
+            "🎮 Demo works offline for testing."
+        )
+        instruction_label = tk.Label(content_frame, text=instructions,
+                                     font=('Segoe UI', 11), bg=bg_secondary, fg=text_primary,
+                                     justify=tk.LEFT, wraplength=520)
+        instruction_label.pack(padx=16, pady=(6, 16))
 
     def start_demo(self):
         """Start in demo mode"""
@@ -1351,6 +1420,15 @@ class APISetupDialog:
         """Use free APIs"""
         self.result = "FREE"
         self.dialog.destroy()
+
+    def _auto_choose_free_if_idle(self):
+        # If user didn't choose within timeout, proceed with Free APIs
+        if self.result is None and self.dialog.winfo_exists():
+            self.result = "FREE"
+            try:
+                self.dialog.destroy()
+            except Exception:
+                pass
 
 
 def main():
