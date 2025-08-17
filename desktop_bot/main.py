@@ -214,6 +214,30 @@ class CryptoDataProvider:
 
         return crypto_data
 
+    def get_binance_klines(self, symbol: str, interval: str = '1m', limit: int = 500) -> pd.DataFrame:
+        """Fetch historical klines for a symbol from Binance and return a DataFrame."""
+        pair = f"{symbol}USDT"
+        url = f"{self.binance_base}/klines"
+        params = { 'symbol': pair, 'interval': interval, 'limit': int(limit) }
+        resp = self.session.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            return pd.DataFrame()
+        # Columns: [openTime, open, high, low, close, volume, closeTime, ... quoteAssetVolume, trades, ...]
+        records = []
+        for k in data:
+            open_time_ms = int(k[0])
+            ts = datetime.fromtimestamp(open_time_ms / 1000.0)
+            high = float(k[2])
+            low = float(k[3])
+            close = float(k[4])
+            vol = float(k[5])
+            records.append({ 'timestamp': ts, 'close': close, 'high': high, 'low': low, 'volume': vol })
+        df = pd.DataFrame.from_records(records)
+        df = df.set_index('timestamp')
+        return df
+
     def _generate_demo_data(self, symbols: List[str]) -> Dict[str, CryptoData]:
         """Generate realistic demo data"""
         base_prices = {
@@ -415,6 +439,10 @@ class DataManager:
             CREATE INDEX IF NOT EXISTS idx_symbol_timestamp 
             ON price_data (symbol, timestamp)
         ''')
+        cursor.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_symbol_timestamp
+            ON price_data (symbol, timestamp)
+        ''')
 
         conn.commit()
         conn.close()
@@ -431,6 +459,13 @@ class DataManager:
                 INSERT INTO price_data 
                 (symbol, price, high, low, volume, market_cap, change_24h, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, timestamp) DO UPDATE SET
+                    price=excluded.price,
+                    high=excluded.high,
+                    low=excluded.low,
+                    volume=excluded.volume,
+                    market_cap=excluded.market_cap,
+                    change_24h=excluded.change_24h
             ''', (
                 symbol, data.price, data.price, data.price,
                 data.volume_24h, data.market_cap, data.change_24h, data.timestamp
@@ -465,6 +500,36 @@ class DataManager:
 
         return df
 
+    def store_ohlc_dataframe(self, symbol: str, df: pd.DataFrame):
+        """Bulk store OHLC dataframe with columns close, high, low, volume and index as timestamps."""
+        if df is None or df.empty:
+            return
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        rows = []
+        for ts, row in df.iterrows():
+            rows.append((
+                symbol,
+                float(row.get('close', row.get('price', 0.0)) or 0.0),
+                float(row.get('high', row.get('close', 0.0)) or 0.0),
+                float(row.get('low', row.get('close', 0.0)) or 0.0),
+                float(row.get('volume', 0.0) or 0.0),
+                0.0,
+                0.0,
+                pd.to_datetime(ts)
+            ))
+        cursor.executemany('''
+            INSERT INTO price_data (symbol, price, high, low, volume, market_cap, change_24h, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, timestamp) DO UPDATE SET
+                price=excluded.price,
+                high=excluded.high,
+                low=excluded.low,
+                volume=excluded.volume
+        ''', rows)
+        conn.commit()
+        conn.close()
+
 
 class ModernCryptoTradingBot:
     """Modern crypto trading bot with real-time data"""
@@ -495,6 +560,9 @@ class ModernCryptoTradingBot:
         self.is_running = False
         self.update_interval = 30  # seconds
         self.last_update = None
+        
+        # Track last emitted signals per symbol to log only on change
+        self._last_emitted_signals: Dict[str, str] = {}
 
         # Initialize GUI
         self.setup_styles()
@@ -800,6 +868,9 @@ class ModernCryptoTradingBot:
         self.log_signal(f"📊 Monitoring {len(self.symbols)} cryptocurrencies")
         self.log_signal(f"⏰ Update interval: {self.update_interval}s")
 
+        # Seed historical data if needed in background to enable immediate signals
+        threading.Thread(target=self.seed_history_if_needed, daemon=True).start()
+
     def stop_bot(self):
         """Stop the trading bot"""
         self.is_running = False
@@ -882,6 +953,12 @@ class ModernCryptoTradingBot:
                         signal_color = self.colors['text_secondary']
 
                     widget['signal'].config(text=signal_text, fg=signal_color)
+
+                    # Log on change for BUY/SELL
+                    prev = self._last_emitted_signals.get(symbol)
+                    if signal in ("BUY", "SELL") and signal != prev:
+                        self.log_signal(f"⚡ {symbol}: {signal} ({confidence:.1f}% confidence)")
+                        self._last_emitted_signals[symbol] = signal
 
     def update_analysis(self):
         """Update current analysis panel"""
@@ -1067,6 +1144,27 @@ class ModernCryptoTradingBot:
         else:
             self.root.after(5000, self.schedule_updates)  # Check every 5 seconds when stopped
 
+    def seed_history_if_needed(self):
+        """Fetch and store recent OHLC history to enable immediate charts/signals."""
+        try:
+            # Seed selected symbol first for faster UI feedback
+            symbols_to_seed = [self.selected_symbol] + [s for s in self.symbols if s != self.selected_symbol]
+            for symbol in symbols_to_seed:
+                existing = self.data_manager.get_historical_data(symbol, hours=6)
+                if existing is not None and len(existing) >= 60:
+                    continue
+                try:
+                    df = self.data_provider.get_binance_klines(symbol, interval='1m', limit=500)
+                    if not df.empty:
+                        self.data_manager.store_ohlc_dataframe(symbol, df)
+                        # Update UI after seeding first symbol
+                        if symbol == self.selected_symbol:
+                            self.root.after(0, self.update_gui)
+                except Exception as e:
+                    self.log_signal(f"⚠️ Failed to seed history for {symbol}: {e}")
+        except Exception as e:
+            self.log_signal(f"⚠️ Seed history error: {e}")
+
 
 class APISetupDialog:
     """Modern API setup dialog"""
@@ -1124,7 +1222,7 @@ class APISetupDialog:
             "   • Get your API key from the dashboard\n\n"
             "2. Alternative: The bot can use free APIs (CoinGecko, Binance)\n"
             "   • Limited features but still functional\n"
-            "   • No registration required\n\n"
+            "   • No registration required\n"
             "3. Demo Mode: \n"
             "   • Simulated data for testing\n"
             "   • All features available for learning\n"
