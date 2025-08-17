@@ -594,8 +594,8 @@ class ModernCryptoTradingBot:
         
         # Track last emitted signals per symbol to log only on change
         self._last_emitted_signals: Dict[str, str] = {}
-        # Track last candle timestamp to avoid duplicate recalcs
-        self._last_candle_ts: Dict[str, datetime] = {}
+        # Track last candle minute timestamp to avoid duplicate recalcs per symbol
+        self._last_candle_min_ts: Dict[str, datetime] = {}
         
         # Default risk parameters for targets (editable later via UI if needed)
         self.tp_pct = 1.5  # take-profit percent
@@ -995,13 +995,17 @@ class ModernCryptoTradingBot:
                 widget['change'].config(text=f"{prefix}{change:.2f}%", fg=color)
 
                 # Update trading signal
-                historical_data = self.data_manager.get_historical_data(symbol, hours=48)
+                historical_data = self.data_manager.get_historical_data(symbol, hours=12)
                 if not historical_data.empty and len(historical_data) > 20:
-                    # Only compute on new candle boundary to reduce noise/duplicates
+                    # Only compute on new minute to reduce duplicates
                     last_ts = historical_data.index.max()
-                    prev_seen = self._last_candle_ts.get(symbol)
-                    if prev_seen is None or (isinstance(last_ts, pd.Timestamp) and last_ts.to_pydatetime() != prev_seen):
-                        self._last_candle_ts[symbol] = last_ts.to_pydatetime() if isinstance(last_ts, pd.Timestamp) else last_ts
+                    if isinstance(last_ts, pd.Timestamp):
+                        last_minute = last_ts.floor('T').to_pydatetime()
+                    else:
+                        last_minute = (pd.to_datetime(last_ts).floor('T')).to_pydatetime()
+                    prev_seen = self._last_candle_min_ts.get(symbol)
+                    if prev_seen is None or last_minute != prev_seen:
+                        self._last_candle_min_ts[symbol] = last_minute
                         signal, confidence = self.strategy.analyze(historical_data)
 
                         if signal == "BUY":
@@ -1031,7 +1035,7 @@ class ModernCryptoTradingBot:
                                 sl = round(entry * (1 + self.sl_pct / 100.0), 6)
                                 self.signal_window.add_signal(symbol, "SELL", entry, tp, sl, datetime.now())
                     else:
-                        # Keep last signal text without re-triggering
+                        # Keep last displayed signal text
                         signal = self._last_emitted_signals.get(symbol, "HOLD")
                         if signal == "BUY":
                             widget['signal'].config(text="🟢 BUY", fg=self.colors['accent'])
@@ -1047,7 +1051,7 @@ class ModernCryptoTradingBot:
             return
 
         data = self.current_data[symbol]
-        historical_data = self.data_manager.get_historical_data(symbol, hours=48)
+        historical_data = self.data_manager.get_historical_data(symbol, hours=12)
 
         # Update basic info
         self.analysis_labels['price'].config(text=f"${data.price:,.2f}")
@@ -1100,7 +1104,7 @@ class ModernCryptoTradingBot:
     def update_charts(self):
         """Update all charts"""
         symbol = self.selected_symbol
-        historical_data = self.data_manager.get_historical_data(symbol, hours=48)
+        historical_data = self.data_manager.get_historical_data(symbol, hours=12)
 
         if historical_data.empty or len(historical_data) < 10:
             return
@@ -1173,7 +1177,16 @@ class ModernCryptoTradingBot:
         # Format x-axis
         for ax in [self.ax_price, self.ax_volume, self.ax_rsi, self.ax_macd]:
             ax.tick_params(colors='white')
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        try:
+            if len(times) >= 2 and (times[-1] - times[0]).total_seconds() <= 7200:
+                fmt = mdates.DateFormatter('%H:%M:%S')
+            else:
+                fmt = mdates.DateFormatter('%H:%M')
+            for ax in [self.ax_price, self.ax_volume, self.ax_rsi, self.ax_macd]:
+                ax.xaxis.set_major_formatter(fmt)
+        except Exception:
+            for ax in [self.ax_price, self.ax_volume, self.ax_rsi, self.ax_macd]:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
         # Tight layout and refresh
         self.fig.tight_layout()
@@ -1449,6 +1462,10 @@ class APISetupDialog:
         else:
             messagebox.showwarning("Invalid API Key",
                                    "Please enter a valid API key or use Free APIs/Demo.")
+            try:
+                self.api_entry.focus_set()
+            except Exception:
+                pass
             return
 
     def use_free(self):
