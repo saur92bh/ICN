@@ -508,6 +508,7 @@ class DataManager:
         cursor = conn.cursor()
         rows = []
         for ts, row in df.iterrows():
+            ts_py = ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else (pd.to_datetime(ts).to_pydatetime() if not isinstance(ts, datetime) else ts)
             rows.append((
                 symbol,
                 float(row.get('close', row.get('price', 0.0)) or 0.0),
@@ -516,7 +517,7 @@ class DataManager:
                 float(row.get('volume', 0.0) or 0.0),
                 0.0,
                 0.0,
-                pd.to_datetime(ts)
+                ts_py
             ))
         cursor.executemany('''
             INSERT INTO price_data (symbol, price, high, low, volume, market_cap, change_24h, timestamp)
