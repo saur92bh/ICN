@@ -588,7 +588,7 @@ class ModernCryptoTradingBot:
 
         # Control variables
         self.is_running = False
-        self.update_interval = 30  # seconds
+        self.update_interval = 10  # seconds (faster feedback)
         self.last_update = None
         
         # Track last emitted signals per symbol to log only on change
@@ -701,12 +701,19 @@ class ModernCryptoTradingBot:
                                      font=('Segoe UI', 10, 'bold'), state='disabled')
         self.stop_button.grid(row=0, column=3, padx=5)
 
+        # Refresh button
+        self.refresh_button = tk.Button(controls_frame, text="🔄 Refresh",
+                                        command=lambda: self.root.after(0, self.update_data), width=10,
+                                        bg=self.colors['bg_tertiary'], fg=self.colors['text_primary'],
+                                        font=('Segoe UI', 10, 'bold'))
+        self.refresh_button.grid(row=0, column=4, padx=6)
+
         # Backtest button
         self.backtest_button = tk.Button(controls_frame, text="🧪 Backtest",
                                          command=self.run_backtest, width=10,
                                          bg='#1f6feb', fg='white',
                                          font=('Segoe UI', 10, 'bold'))
-        self.backtest_button.grid(row=0, column=4, padx=6)
+        self.backtest_button.grid(row=0, column=5, padx=6)
 
         # Status indicator
         self.status_var = tk.StringVar(value="🔴 Stopped")
@@ -1295,6 +1302,7 @@ class APISetupDialog:
 
     def __init__(self, parent, preset_api_key: str | None = None):
         self.result = None
+        self._auto_after_id = None
 
         # Create dialog
         self.dialog = tk.Toplevel(parent)
@@ -1321,7 +1329,7 @@ class APISetupDialog:
             pass
 
         # Auto-fallback to Free APIs after 8 seconds if no choice is made
-        self.dialog.after(8000, self._auto_choose_free_if_idle)
+        self._auto_after_id = self.dialog.after(8000, self._auto_choose_free_if_idle)
 
         # Drop topmost after a short delay so user can move other windows
         try:
@@ -1376,6 +1384,10 @@ class APISetupDialog:
                              relief='flat', cursor='hand2')
         demo_btn.pack(side=tk.LEFT, padx=8)
 
+        # Cancel auto-fallback when any button is clicked
+        for btn in (api_btn, skip_btn, demo_btn):
+            btn.bind('<Button-1>', lambda e: self._cancel_auto())
+
         # API key input frame (immediately below buttons)
         input_frame = tk.Frame(content_frame, bg=bg_secondary)
         input_frame.pack(pady=8)
@@ -1393,6 +1405,8 @@ class APISetupDialog:
             self.api_entry.focus_set()
         except Exception:
             pass
+        # Cancel auto-fallback if the user starts typing
+        self.api_entry.bind('<Key>', lambda e: self._cancel_auto())
 
         # Short instructions (compact)
         instructions = (
@@ -1433,6 +1447,14 @@ class APISetupDialog:
                 self.dialog.destroy()
             except Exception:
                 pass
+
+    def _cancel_auto(self):
+        try:
+            if self._auto_after_id is not None:
+                self.dialog.after_cancel(self._auto_after_id)
+                self._auto_after_id = None
+        except Exception:
+            pass
 
 
 def main():
