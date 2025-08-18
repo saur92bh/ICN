@@ -199,7 +199,8 @@ class CryptoDataProvider:
             'LINK': 'chainlink',
             'AVAX': 'avalanche-2',
             'UNI': 'uniswap',
-            'ATOM': 'cosmos'
+            'ATOM': 'cosmos',
+            'XRP': 'ripple'
         }
 
         coin_ids = [symbol_map.get(symbol, symbol.lower()) for symbol in symbols]
@@ -311,7 +312,8 @@ class CryptoDataProvider:
             'LINK': 7.8 + np.random.normal(0, 0.5),
             'AVAX': 10.5 + np.random.normal(0, 1),
             'UNI': 5.1 + np.random.normal(0, 0.4),
-            'ATOM': 8.3 + np.random.normal(0, 0.6)
+            'ATOM': 8.3 + np.random.normal(0, 0.6),
+            'XRP': 0.60 + np.random.normal(0, 0.02)
         }
 
         crypto_data = {}
@@ -616,7 +618,7 @@ class ModernCryptoTradingBot:
         self.strategy = MultiIndicatorStrategy()
 
         # Available cryptocurrencies
-        self.symbols = ['BTCUSD']
+        self.symbols = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD']
         self.selected_symbol = self.symbols[0]
 
         # Data storage
