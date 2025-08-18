@@ -93,38 +93,66 @@ class CryptoDataProvider:
     def get_real_time_data(self, symbols: List[str]) -> Dict[str, CryptoData]:
         """Get real-time data using multiple sources"""
 
-        result: Dict[str, CryptoData] = {}
+        # Normalize requested symbols: map BTCUSD/BTCUSDT -> BTC for CMC; remember original keys
+        normalized_to_requested: Dict[str, str] = {}
+        cmc_symbols: List[str] = []
+        for s in symbols:
+            base = s.replace('/', '').upper()
+            if base.endswith('USDT'):
+                base = base[:-4]
+            elif base.endswith('USD'):
+                base = base[:-3]
+            normalized_to_requested[base] = s
+            if base not in cmc_symbols:
+                cmc_symbols.append(base)
+
+        result_base: Dict[str, CryptoData] = {}
 
         # Try CoinMarketCap first (if API key provided)
         if self.cmc_api_key:
             try:
-                result = self._get_cmc_data(symbols)
-                if result:
+                result_base = self._get_cmc_data(cmc_symbols)
+                if result_base:
                     self.last_source = 'CoinMarketCap'
-                    return result
             except Exception as e:
                 print(f"CMC API error: {e}")
 
         # Fallback to free APIs
-        try:
-            result = self._get_coingecko_data(symbols)
-            if result:
-                self.last_source = 'CoinGecko'
-                return result
-        except Exception as e:
-            print(f"CoinGecko API error: {e}")
+        if not result_base:
+            try:
+                result_base = self._get_coingecko_data(cmc_symbols)
+                if result_base:
+                    self.last_source = 'CoinGecko'
+            except Exception as e:
+                print(f"CoinGecko API error: {e}")
 
-        try:
-            result = self._get_binance_data(symbols)
-            if result:
-                self.last_source = 'Binance'
-                return result
-        except Exception as e:
-            print(f"Binance API error: {e}")
+        if not result_base:
+            try:
+                result_base = self._get_binance_data(cmc_symbols)
+                if result_base:
+                    self.last_source = 'Binance'
+            except Exception as e:
+                print(f"Binance API error: {e}")
 
-        # Final fallback to demo data
-        self.last_source = 'Demo'
-        return self._generate_demo_data(symbols)
+        if not result_base:
+            self.last_source = 'Demo'
+            result_base = self._generate_demo_data(cmc_symbols)
+
+        # Remap to requested keys
+        remapped: Dict[str, CryptoData] = {}
+        for base, requested in normalized_to_requested.items():
+            if base in result_base:
+                data = result_base[base]
+                remapped[requested] = CryptoData(
+                    symbol=requested,
+                    price=data.price,
+                    change_24h=data.change_24h,
+                    change_7d=data.change_7d,
+                    volume_24h=data.volume_24h,
+                    market_cap=data.market_cap,
+                    timestamp=data.timestamp,
+                )
+        return remapped
 
     def _get_cmc_data(self, symbols: List[str]) -> Dict[str, CryptoData]:
         """Get data from CoinMarketCap"""
@@ -217,19 +245,26 @@ class CryptoDataProvider:
         data = response.json()
         crypto_data = {}
 
-        wanted = set(symbols)
+        # Build mapping from base symbol -> requested display symbol
+        base_to_requested: Dict[str, str] = {}
+        for s in symbols:
+            base = s.upper()
+            base_to_requested[base] = s
+        # Accept both USDT/USD requested names
+        # Loop through Binance symbols and fill by base
         for item in data:
             sym = item.get('symbol', '')
             if not sym.endswith('USDT'):
                 continue
-            symbol_base = sym[:-4]
-            if symbol_base in wanted:
-                last_price = float(item['lastPrice']) if item.get('lastPrice') else 0.0
-                vol_base = float(item['volume']) if item.get('volume') else 0.0
+            base = sym[:-4]
+            if base in base_to_requested:
+                last_price = float(item.get('lastPrice') or 0.0)
+                vol_base = float(item.get('volume') or 0.0)
                 vol_usd = vol_base * last_price
-                change_pct = float(item['priceChangePercent']) if item.get('priceChangePercent') else 0.0
-                crypto_data[symbol_base] = CryptoData(
-                    symbol=symbol_base,
+                change_pct = float(item.get('priceChangePercent') or 0.0)
+                display = base_to_requested[base]
+                crypto_data[base] = CryptoData(
+                    symbol=display,
                     price=last_price,
                     change_24h=change_pct,
                     change_7d=0.0,  # Not available
@@ -581,7 +616,7 @@ class ModernCryptoTradingBot:
         self.strategy = MultiIndicatorStrategy()
 
         # Available cryptocurrencies
-        self.symbols = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'MATIC', 'LINK', 'AVAX', 'UNI', 'ATOM']
+        self.symbols = ['BTCUSD']
         self.selected_symbol = 'BTC'
 
         # Data storage
@@ -591,6 +626,8 @@ class ModernCryptoTradingBot:
         self.is_running = False
         self.update_interval = 10  # seconds (faster feedback)
         self.last_update = None
+        self.timeframe = '5m'
+        self.update_lock = threading.Lock()
         
         # Track last emitted signals per symbol to log only on change
         self._last_emitted_signals: Dict[str, str] = {}
@@ -949,6 +986,8 @@ class ModernCryptoTradingBot:
 
     def update_data(self):
         """Fetch and update cryptocurrency data"""
+        if not self.update_lock.acquire(blocking=False):
+            return
         try:
             # Fetch real-time data
             self.current_data = self.data_provider.get_real_time_data(self.symbols)
@@ -963,6 +1002,11 @@ class ModernCryptoTradingBot:
 
         except Exception as e:
             self.log_signal(f"❌ Error updating data: {str(e)}")
+        finally:
+            try:
+                self.update_lock.release()
+            except Exception:
+                pass
 
     def update_gui(self):
         """Update all GUI elements"""
@@ -1247,7 +1291,13 @@ class ModernCryptoTradingBot:
                 if existing is not None and len(existing) >= 60:
                     continue
                 try:
-                    df = self.data_provider.get_binance_klines(symbol, interval='1m', limit=500)
+                    # Map requested to base for Binance
+                    base = symbol.replace('/', '').upper()
+                    if base.endswith('USDT'):
+                        base = base[:-4]
+                    elif base.endswith('USD'):
+                        base = base[:-3]
+                    df = self.data_provider.get_binance_klines(base, interval=self.timeframe, limit=500)
                     if not df.empty:
                         self.data_manager.store_ohlc_dataframe(symbol, df)
                         # Update UI after seeding first symbol
@@ -1460,8 +1510,7 @@ class APISetupDialog:
             self.result = api_key
             self.dialog.destroy()
         else:
-            messagebox.showwarning("Invalid API Key",
-                                   "Please enter a valid API key or use Free APIs/Demo.")
+            # Do not proceed; focus entry without warning until something typed
             try:
                 self.api_entry.focus_set()
             except Exception:
