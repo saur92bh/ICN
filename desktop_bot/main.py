@@ -617,7 +617,7 @@ class ModernCryptoTradingBot:
 
         # Available cryptocurrencies
         self.symbols = ['BTCUSD']
-        self.selected_symbol = 'BTC'
+        self.selected_symbol = self.symbols[0]
 
         # Data storage
         self.current_data: Dict[str, CryptoData] = {}
